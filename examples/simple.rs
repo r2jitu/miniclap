@@ -1,6 +1,6 @@
-use smallclap::SmallClap;
+use miniclap::MiniClap;
 
-#[derive(Debug, SmallClap)]
+#[derive(Debug, MiniClap)]
 struct Opts {
     a: i64,
     b: String,

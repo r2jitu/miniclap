@@ -1,5 +1,5 @@
 [package]
-name = "smallclap_derive"
+name = "miniclap_derive"
 version = "0.1.0"
 authors = ["Jitu Das <jitudas@gmail.com>"]
 edition = "2018"

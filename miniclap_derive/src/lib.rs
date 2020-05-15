@@ -23,8 +23,8 @@ fn extract_options(fields: &mut dyn Iterator<Item = &Field>) -> App {
     App { args }
 }
 
-#[proc_macro_derive(SmallClap)]
-pub fn derive_smallclap(input: TokenStream) -> TokenStream {
+#[proc_macro_derive(MiniClap)]
+pub fn derive_miniclap(input: TokenStream) -> TokenStream {
     let input: syn::DeriveInput = syn::parse_macro_input!(input);
     let opts = match input.data {
         syn::Data::Struct(syn::DataStruct {
@@ -32,7 +32,7 @@ pub fn derive_smallclap(input: TokenStream) -> TokenStream {
             ..
         }) => extract_options(&mut fields.named.iter()),
         _ => {
-            panic!("`#[derive(SmallClap)]` only works for non-tuple structs");
+            panic!("`#[derive(MiniClap)]` only works for non-tuple structs");
         }
     };
 
@@ -52,7 +52,7 @@ pub fn derive_smallclap(input: TokenStream) -> TokenStream {
 
     let name = &input.ident;
     let gen = quote! {
-        impl ::smallclap::SmallClap for #name {
+        impl ::miniclap::MiniClap for #name {
             fn parse_internal(args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Self {
                 #(#decls)*
                 let mut num_args = 0;

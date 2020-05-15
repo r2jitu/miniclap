@@ -1,7 +1,7 @@
-pub use smallclap_derive::SmallClap;
+pub use miniclap_derive::MiniClap;
 use std::ffi::OsString;
 
-pub trait SmallClap: Sized {
+pub trait MiniClap: Sized {
     #[inline]
     fn parse() -> Self {
         Self::parse_from(std::env::args_os())
