@@ -5,14 +5,6 @@ use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
 use syn::{Field, Ident, Lit, Meta, NestedMeta};
 
-struct App {
-    args: Vec<Arg>,
-}
-
-struct Arg {
-    name: Ident,
-}
-
 #[derive(Debug)]
 enum Attr {
     Short(char),
@@ -71,8 +63,24 @@ fn attrs_from_field(f: &Field) -> Vec<Attr> {
         .collect()
 }
 
+struct App {
+    by_pos: Vec<Arg>,
+    by_name: Vec<NamedArg>,
+}
+
+struct Arg {
+    name: Ident,
+}
+
+struct NamedArg {
+    arg: Arg,
+    short: Option<String>,
+    long: Option<String>,
+}
+
 fn extract_options(fields: &mut dyn Iterator<Item = &Field>) -> App {
-    let mut args = Vec::new();
+    let mut by_pos = Vec::new();
+    let mut by_name = Vec::new();
     for f in fields {
         let attrs = attrs_from_field(f);
         println!(
@@ -80,11 +88,28 @@ fn extract_options(fields: &mut dyn Iterator<Item = &Field>) -> App {
             f.ident.as_ref().unwrap().to_string(),
             attrs
         );
-        args.push(Arg {
+
+        let mut short = None;
+        let mut long = None;
+
+        for a in attrs {
+            match a {
+                Attr::Short(c) => short = Some(c.to_string()),
+                Attr::Long(name) => long = Some(name),
+            }
+        }
+
+        let arg = Arg {
             name: f.ident.clone().unwrap(),
-        });
+        };
+
+        if short.is_some() || long.is_some() {
+            by_name.push(NamedArg { arg, short, long });
+        } else {
+            by_pos.push(arg);
+        }
     }
-    App { args }
+    App { by_pos, by_name }
 }
 
 #[proc_macro_derive(MiniClap, attributes(miniclap))]
@@ -104,49 +129,82 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
     let mut decls = Vec::new();
     let mut fields = Vec::new();
 
-    // let mut name_matches = Vec::new();
-    // for arg in opts.flags {
-    //     todo!()
-    // }
-    // name_matches.push(quote! { _ => () });
-
-    let mut pos_matches = Vec::new();
-    for (i, arg) in opts.args.iter().enumerate() {
-        let name = &arg.name;
-        let arg_name = format_ident!("arg_{}", &arg.name);
+    let mut name_matches = Vec::new();
+    for arg in opts.by_name {
+        let name = &arg.arg.name;
+        let arg_name = format_ident!("arg_{}", name);
         let missing = format!("Missing argument `{}`", name);
+        let short = arg.short.map(|x| format!("-{}", x));
+        let long = arg.long.map(|x| format!("--{}", x));
+        let pattern = match (short, long) {
+            (Some(short), Some(long)) => quote! { #short | #long },
+            (Some(short), None) => quote! { #short },
+            (None, Some(long)) => quote! { #long },
+            _ => panic!(),
+        };
+        let assign = quote! {{
+            let value_os = args.next().expect("Missing value for argument");
+            let value = value_os.to_str().expect("Invalid string");
+            #arg_name = Some(value.parse().expect("Invalid argument type"))
+        }};
         decls.push(quote! { let mut #arg_name = None; });
-        pos_matches.push(quote! { #i => #arg_name = Some(arg.parse().unwrap()) });
+        name_matches.push(quote! { #pattern => #assign });
         fields.push(quote! { #name: #arg_name.expect(#missing) });
     }
-    pos_matches.push(quote! { _ => panic!("Too many args") });
+    let name_matches = if name_matches.len() > 0 {
+        quote! {
+            match arg {
+                #(#name_matches),*,
+                _ => panic!("Invalid named argument"),
+            }
+        }
+    } else {
+        quote! { panic!("No named args expected") }
+    };
+
+    let mut pos_matches = Vec::new();
+    for (i, arg) in opts.by_pos.iter().enumerate() {
+        let name = &arg.name;
+        let arg_name = format_ident!("arg_{}", name);
+        let missing = format!("Missing argument `{}`", name);
+        decls.push(quote! { let mut #arg_name = None; });
+        pos_matches.push(quote! { #i => #arg_name = Some(arg.parse().expect("Invalid argument type")) });
+        fields.push(quote! { #name: #arg_name.expect(#missing) });
+    }
+    let pos_matches = if pos_matches.len() > 0 {
+        quote! {
+            match num_args {
+                #(#pos_matches),*,
+                _ => panic!("Too many args"),
+            }
+            num_args += 1;
+        }
+    } else {
+        quote! { panic!("No positional args expected") }
+    };
+    if opts.by_pos.len() > 0 {
+        decls.push(quote! { let mut num_args = 0; });
+    }
 
     let name = &input.ident;
-    let gen = quote! {
+    quote!(
         impl ::miniclap::MiniClap for #name {
             fn parse_internal(args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Self {
                 #(#decls)*
-                let mut num_args = 0;
                 let _bin_name = args.next();
-                for arg in args {
-                    let arg = arg.to_str().unwrap();
-
-                    // By name
-                    // match arg {
-                    //     #(#name_matches),*
-                    // }
-
-                    // By position
-                    match num_args {
-                        #(#pos_matches),*
+                while let Some(arg_os) = args.next() {
+                    let arg = arg_os.to_str().unwrap();
+                    if arg.chars().next() == Some('-') {
+                        #name_matches
+                    } else {
+                        #pos_matches
                     }
-                    num_args += 1;
                 }
                 Self {
                     #(#fields),*
                 }
             }
         }
-    };
-    gen.into()
+    )
+    .into()
 }
