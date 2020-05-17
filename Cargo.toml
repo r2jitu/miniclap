@@ -8,3 +8,6 @@ edition = "2018"
 
 [dependencies]
 miniclap_derive = { path = "./miniclap_derive" }
+
+[workspace]
+members = ["miniclap_derive"]
