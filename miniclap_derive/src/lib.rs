@@ -133,6 +133,7 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
     for arg in opts.by_name {
         let name = &arg.arg.name;
         let arg_name = format_ident!("arg_{}", name);
+        let arg_str = name.to_string();
         let missing = format!("Missing argument `{}`", name);
         let short = arg.short.map(|x| format!("-{}", x));
         let long = arg.long.map(|x| format!("--{}", x));
@@ -142,11 +143,9 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
             (None, Some(long)) => quote! { #long },
             _ => panic!(),
         };
-        let assign = quote! {{
-            let value_os = args.next().expect("Missing value for argument");
-            let value = value_os.to_str().expect("Invalid string");
-            #arg_name = Some(value.parse().expect("Invalid argument type"))
-        }};
+        let assign = quote! {
+            #arg_name = Some(get_value(#arg_str).parse().expect("Invalid argument type"))
+        };
         decls.push(quote! { let mut #arg_name = None; });
         name_matches.push(quote! { #pattern => #assign });
         fields.push(quote! { #name: #arg_name.expect(#missing) });
@@ -168,7 +167,8 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
         let arg_name = format_ident!("arg_{}", name);
         let missing = format!("Missing argument `{}`", name);
         decls.push(quote! { let mut #arg_name = None; });
-        pos_matches.push(quote! { #i => #arg_name = Some(arg.parse().expect("Invalid argument type")) });
+        pos_matches
+            .push(quote! { #i => #arg_name = Some(arg.parse().expect("Invalid argument type")) });
         fields.push(quote! { #name: #arg_name.expect(#missing) });
     }
     let pos_matches = if pos_matches.len() > 0 {
@@ -186,20 +186,35 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
         decls.push(quote! { let mut num_args = 0; });
     }
 
+    let parse_loop = quote! {
+        let _bin_name = args.next();
+        while let Some(arg_os) = args.next() {
+            let mut arg: &str = &arg_os.to_str().unwrap();
+            if arg.chars().next() == Some('-') {
+                let value: Option<String> = arg.find("=").map(|i| {
+                    let (x, y) = arg.split_at(i);
+                    arg = x;
+                    y[1..].into()
+                });
+                let get_value = |name: &str| value.unwrap_or_else(|| {
+                    let value_os = args.next().expect(&format!("Missing value for `{}`", name));
+                    value_os.into_string().expect(&format!("Value for `{}` is an invalid string", name))
+                });
+                #name_matches
+            } else {
+                #pos_matches
+            }
+        }
+    };
+
     let name = &input.ident;
     quote!(
         impl ::miniclap::MiniClap for #name {
-            fn parse_internal(args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Self {
+            fn parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Self {
                 #(#decls)*
-                let _bin_name = args.next();
-                while let Some(arg_os) = args.next() {
-                    let arg = arg_os.to_str().unwrap();
-                    if arg.chars().next() == Some('-') {
-                        #name_matches
-                    } else {
-                        #pos_matches
-                    }
-                }
+
+                #parse_loop
+
                 Self {
                     #(#fields),*
                 }
