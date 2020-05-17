@@ -157,17 +157,14 @@ impl Generator {
 
             let name_string = name.to_string();
             let parse = quote! {
-                get_value(#name_string)?.parse().map_err(
-                    |_| Error::from(format!("Failed to parse argument `{}` from `{}`", #name_string, arg))
-                )?
+                get_value(#name_string)?.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
             };
 
             let arg_var = format_ident!("arg_{}", name);
-            let missing = format!("Missing argument `{}`", name);
             self.decls.push(quote! { let mut #arg_var = None; });
             matches.push(quote! { #pattern => #arg_var = Some(#parse) });
             self.fields.push(quote! {
-                #name: #arg_var.ok_or(Error::from(#missing))?
+                #name: #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
             });
         }
 
@@ -179,13 +176,13 @@ impl Generator {
             });
             let get_value = |name: &str| -> Result<String> {
                 value.map_or_else(|| {
-                    let value_os = args.next().ok_or_else(|| Error::from(format!("Missing value for `{}`", name)))?;
-                    value_os.into_string().map_err(|_| Error::from(format!("Value for `{}` is an invalid string", name)))
+                    let value_os = args.next().ok_or_else(|| Error::missing_required_argument(name))?;
+                    value_os.into_string().map_err(|_| Error::invalid_utf8())
                 }, Ok)
             };
             match arg {
                 #(#matches),*,
-                _ => return Err(format!("Invalid switched argument `{}`", arg).into()),
+                _ => return Err(Error::unknown_argument(arg)),
             }
         }
     }
@@ -196,16 +193,13 @@ impl Generator {
             let name = &arg.name;
             let name_string = name.to_string();
             let arg_var = format_ident!("arg_{}", name);
-            let missing = format!("Missing argument `{}`", name);
             let parse = quote! {
-                arg.parse().map_err(
-                    |_| Error::from(format!("Failed to parse argument `{}` from `{}`", #name_string, arg))
-                )?
+                arg.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
             };
             self.decls.push(quote! { let mut #arg_var = None; });
             position_matches.push(quote! { #i => #arg_var = Some(#parse) });
             self.fields.push(quote! {
-                #name: #arg_var.ok_or(Error::from(#missing))?
+                #name: #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
             });
         }
         self.decls.push(quote! { let mut num_args = 0; });
@@ -213,7 +207,7 @@ impl Generator {
         quote! {
             match num_args {
                 #(#position_matches),*,
-                _ => return Err(format!("Too many positional arguments, starting with `{}`", arg).into()),
+                _ => return Err(Error::too_many_arguments(arg)),
             }
             num_args += 1;
         }
@@ -243,7 +237,7 @@ impl Generator {
 
                     let _bin_name = args.next();
                     while let Some(arg_os) = args.next() {
-                        let mut arg: &str = &arg_os.to_str().ok_or_else(|| Error::from("Argument was not valid Unicode"))?;
+                        let mut arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
                         if arg.chars().next() == Some('-') {
                             #switch_matcher
                         } else {

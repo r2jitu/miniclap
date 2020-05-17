@@ -1,4 +1,5 @@
 pub use miniclap_derive::MiniClap;
+use std::error::Error as StdError;
 use std::ffi::OsString;
 
 pub trait MiniClap: Sized {
@@ -39,29 +40,85 @@ pub trait MiniClap: Sized {
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug)]
+pub enum ErrorKind {
+    ParseFailed,
+    UnknownArgument,
+    TooManyArguments,
+    MissingRequiredArgument,
+    InvalidUtf8,
+    Other,
+}
+
+#[derive(Debug)]
 pub struct Error {
-    message: String,
+    pub message: String,
+    pub kind: ErrorKind,
+    pub source: Option<Box<dyn StdError + 'static>>,
 }
 
 impl Error {
-    pub fn new(message: String) -> Error {
-        Error { message }
-    }
-
     pub fn exit(&self) -> ! {
         eprintln!("error: {}", self.message);
         std::process::exit(1)
     }
-}
 
-impl From<&str> for Error {
-    fn from(x: &str) -> Self {
-        Error::new(x.to_string())
+    pub fn parse_failed(name: &str, err: Box<dyn StdError>) -> Error {
+        Error {
+            message: format!("Invalid value for '{}': {}", name, err),
+            kind: ErrorKind::ParseFailed,
+            source: Some(err),
+        }
+    }
+
+    pub fn unknown_argument(name: &str) -> Error {
+        Error {
+            message: format!("Did not recognize argument '{}'", name),
+            kind: ErrorKind::UnknownArgument,
+            source: None,
+        }
+    }
+
+    pub fn too_many_arguments(arg: &str) -> Error {
+        Error {
+            message: format!("Too many arguments, starting with '{}'", arg),
+            kind: ErrorKind::TooManyArguments,
+            source: None,
+        }
+    }
+
+    pub fn missing_required_argument(arg_name: &str) -> Error {
+        Error {
+            message: format!("Missing required argument '{}'", arg_name),
+            kind: ErrorKind::MissingRequiredArgument,
+            source: None,
+        }
+    }
+
+    pub fn invalid_utf8() -> Error {
+        Error {
+            message: "Invalid UTF-8 was detected in one or more arguments".into(),
+            kind: ErrorKind::InvalidUtf8,
+            source: None,
+        }
+    }
+
+    pub fn other<I: Into<String>>(message: I) -> Error {
+        Error {
+            message: message.into(),
+            kind: ErrorKind::Other,
+            source: None,
+        }
     }
 }
 
-impl From<String> for Error {
-    fn from(x: String) -> Self {
-        Error::new(x)
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        self.source.as_ref().map(|x| x.as_ref())
+    }
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.message)
     }
 }
