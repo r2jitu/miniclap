@@ -157,7 +157,8 @@ impl Generator {
 
             let name_string = name.to_string();
             let parse = quote! {
-                get_value(#name_string)?.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
+                ::miniclap::__get_value(#name_string, opt_value, &mut args)?.parse()
+                    .map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
             };
 
             let arg_var = format_ident!("arg_{}", name);
@@ -169,17 +170,7 @@ impl Generator {
         }
 
         quote! {
-            let value: Option<String> = arg.find("=").map(|i| {
-                let (x, y) = arg.split_at(i);
-                arg = x;
-                y[1..].into()
-            });
-            let get_value = |name: &str| -> Result<String> {
-                value.map_or_else(|| {
-                    let value_os = args.next().ok_or_else(|| Error::missing_required_argument(name))?;
-                    value_os.into_string().map_err(|_| Error::invalid_utf8())
-                }, Ok)
-            };
+            let opt_value = ::miniclap::__split_arg_value(&mut arg);
             match arg {
                 #(#matches),*,
                 _ => return Err(Error::unknown_argument(arg)),

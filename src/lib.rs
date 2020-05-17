@@ -122,3 +122,29 @@ impl std::fmt::Display for Error {
         write!(f, "{}", self.message)
     }
 }
+
+/// Split a switch argument at '=' if it exists.
+pub fn __split_arg_value(arg: &mut &str) -> Option<String> {
+    arg.find("=").map(|i| {
+        let (x, y) = arg.split_at(i);
+        *arg = x;
+        y[1..].into()
+    })
+}
+
+/// Gets an argument value from after '=' or from the next argument in the list.
+pub fn __get_value(
+    name: &str,
+    value: Option<String>,
+    args: &mut dyn Iterator<Item = ::std::ffi::OsString>,
+) -> Result<String> {
+    value.map_or_else(
+        || {
+            let value_os = args
+                .next()
+                .ok_or_else(|| Error::missing_required_argument(name))?;
+            value_os.into_string().map_err(|_| Error::invalid_utf8())
+        },
+        Ok,
+    )
+}
