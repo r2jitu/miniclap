@@ -76,6 +76,7 @@ impl Attr {
 struct Arg {
     name: Ident,
     default_value: Option<Lit>,
+    is_required: bool,
 }
 
 /// Argument that is specified by a switch (e.g. -n, --num).
@@ -83,6 +84,7 @@ struct SwitchedArg {
     arg: Arg,
     short: Option<String>,
     long: Option<String>,
+    is_flag: bool,
 }
 
 struct App {
@@ -112,15 +114,46 @@ impl App {
                 }
             }
 
+            let is_positional = short.is_none() && long.is_none();
+            let mut is_required = true;
+            let mut is_flag = false;
+
+            match f.ty {
+                syn::Type::Path(syn::TypePath {
+                    path: syn::Path { ref segments, .. },
+                    ..
+                }) => match segments.last().unwrap().ident.to_string().as_str() {
+                    "Option" => {
+                        // TODO: Add a check for positional
+                        is_required = false;
+                    }
+                    "bool" => {
+                        if is_positional {
+                            abort!(f.ty, "Flags must have short/long switch enabled");
+                        }
+                        is_required = false;
+                        is_flag = true;
+                    }
+                    _ => (),
+                },
+                _ => todo!(),
+            }
+
             let arg = Arg {
                 name: ident,
                 default_value,
+                is_required,
             };
 
-            if short.is_some() || long.is_some() {
-                by_switch.push(SwitchedArg { arg, short, long });
-            } else {
+            if is_positional {
                 by_position.push(arg);
+            } else {
+                by_switch.push(SwitchedArg {
+                    arg,
+                    short,
+                    long,
+                    is_flag,
+                });
             }
         }
         App {
@@ -164,18 +197,49 @@ impl Arg {
         let name_string = self.name.to_string();
         match &self.default_value {
             Some(_) => quote! { #arg_var },
-            None => quote! {
-                #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
-            },
+            None => {
+                if self.is_required {
+                    quote! {
+                        #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
+                    }
+                } else {
+                    quote! { #arg_var }
+                }
+            }
         }
     }
 }
 
-impl std::ops::Deref for SwitchedArg {
-    type Target = Arg;
+impl SwitchedArg {
+    fn declare(&self, arg_var: &Ident) -> TokenStream {
+        if self.is_flag {
+            quote! { let mut #arg_var = false; }
+        } else {
+            self.arg.declare(arg_var)
+        }
+    }
 
-    fn deref(&self) -> &Self::Target {
-        &self.arg
+    fn assign(&self, arg_var: &Ident, value: TokenStream) -> TokenStream {
+        let name_string = self.arg.name.to_string();
+        if self.is_flag {
+            quote! {
+                #arg_var = match opt_value.map(|v| v.parse()) {
+                    Some(Ok(v)) => v,
+                    Some(Err(e)) => return Err(Error::parse_failed(#name_string, Box::new(e))),
+                    None => true,
+                }
+            }
+        } else {
+            self.arg.assign(arg_var, value)
+        }
+    }
+
+    fn retrieve(&self, arg_var: &Ident) -> TokenStream {
+        if self.is_flag {
+            quote! { #arg_var }
+        } else {
+            self.arg.retrieve(arg_var)
+        }
     }
 }
 
@@ -266,6 +330,7 @@ impl Generator {
             impl ::miniclap::MiniClap for #name {
                 fn __parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Result<Self, ::miniclap::Error> {
                     use ::std::string::String;
+                    use ::std::boxed::Box;
                     use ::std::option::Option::{self, Some, None};
                     use ::std::result::Result::{Ok, Err};
                     use ::miniclap::{Error, Result};
