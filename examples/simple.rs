@@ -9,9 +9,11 @@ struct Opts {
     second: i64,
 
     pos: String,
+
+    count: u8,
 }
 
 fn main() {
-    let opts = Opts::parse();
+    let opts = Opts::parse_or_exit();
     println!("opts = {:?}", opts);
 }

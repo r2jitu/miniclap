@@ -35,7 +35,7 @@ impl Attr {
                 _ => abort!(attribute, "Invalid specification for `short`"),
             }),
             "long" => Attr::Long(match attribute {
-                Meta::Path(_) => field_name.into(),
+                Meta::Path(_) => field_name,
                 Meta::NameValue(mnv) => match mnv.lit {
                     Lit::Str(ref lit_str) => lit_str.value(),
                     _ => abort!(mnv.lit, "Only string allowed for `long`"),
@@ -97,6 +97,7 @@ impl App {
             let mut long = None;
 
             for a in attrs {
+                // TODO: Validate the options aren't used multiple times
                 match a {
                     Attr::Short(c) => short = Some(c.to_string()),
                     Attr::Long(name) => long = Some(name),
@@ -133,78 +134,131 @@ impl App {
     }
 }
 
-fn gen_switch_matcher(
-    args: &[SwitchedArg],
-    decls: &mut Vec<TokenStream>,
-    fields: &mut Vec<TokenStream>,
-) -> TokenStream {
-    let mut matches = Vec::new();
-    for arg in args {
-        let name = &arg.arg.name;
-
-        let short = arg.short.as_ref().map(|x| format!("-{}", x));
-        let long = arg.long.as_ref().map(|x| format!("--{}", x));
-        let pattern = match (short, long) {
-            (Some(short), Some(long)) => quote! { #short | #long },
-            (Some(short), None) => quote! { #short },
-            (None, Some(long)) => quote! { #long },
-            _ => unreachable!(),
-        };
-
-        let name_string = name.to_string();
-        let parse = quote! {
-            get_value(#name_string).parse().expect("Invalid argument type")
-        };
-
-        let arg_var = format_ident!("arg_{}", name);
-        let missing = format!("Missing argument `{}`", name);
-        decls.push(quote! { let mut #arg_var = None; });
-        matches.push(quote! { #pattern => #arg_var = Some(#parse) });
-        fields.push(quote! { #name: #arg_var.expect(#missing) });
-    }
-
-    quote! {
-        let value: Option<String> = arg.find("=").map(|i| {
-            let (x, y) = arg.split_at(i);
-            arg = x;
-            y[1..].into()
-        });
-        let get_value = |name: &str| value.unwrap_or_else(|| {
-            let value_os = args.next().expect(&format!("Missing value for `{}`", name));
-            value_os.into_string().expect(&format!("Value for `{}` is an invalid string", name))
-        });
-        match arg {
-            #(#matches),*,
-            _ => panic!("Invalid switched argument"),
-        }
-    }
+struct Generator {
+    decls: Vec<TokenStream>,
+    fields: Vec<TokenStream>,
+    post_matching: Vec<TokenStream>,
 }
 
-fn gen_position_matcher(
-    args: &[Arg],
-    decls: &mut Vec<TokenStream>,
-    fields: &mut Vec<TokenStream>,
-) -> TokenStream {
-    let mut position_matches = Vec::new();
-    for (i, arg) in args.iter().enumerate() {
-        let name = &arg.name;
-        let arg_var = format_ident!("arg_{}", name);
-        let missing = format!("Missing argument `{}`", name);
-        let parse = quote! { arg.parse().expect("Invalid argument type") };
-        decls.push(quote! { let mut #arg_var = None; });
-        position_matches.push(quote! { #i => #arg_var = Some(#parse) });
-        fields.push(quote! { #name: #arg_var.expect(#missing) });
-    }
-    if args.len() > 0 {
-        decls.push(quote! { let mut num_args = 0; });
+impl Generator {
+    fn gen_switch_matcher(&mut self, args: &[SwitchedArg]) -> TokenStream {
+        let mut matches = Vec::new();
+        for arg in args {
+            let name = &arg.arg.name;
+
+            let short = arg.short.as_ref().map(|x| format!("-{}", x));
+            let long = arg.long.as_ref().map(|x| format!("--{}", x));
+            let pattern = match (short, long) {
+                (Some(short), Some(long)) => quote! { #short | #long },
+                (Some(short), None) => quote! { #short },
+                (None, Some(long)) => quote! { #long },
+                _ => unreachable!(),
+            };
+
+            let name_string = name.to_string();
+            let parse = quote! {
+                get_value(#name_string)?.parse().map_err(
+                    |_| Error::from(format!("Failed to parse argument `{}` from `{}`", #name_string, arg))
+                )?
+            };
+
+            let arg_var = format_ident!("arg_{}", name);
+            let missing = format!("Missing argument `{}`", name);
+            self.decls.push(quote! { let mut #arg_var = None; });
+            matches.push(quote! { #pattern => #arg_var = Some(#parse) });
+            self.fields.push(quote! {
+                #name: #arg_var.ok_or(Error::from(#missing))?
+            });
+        }
+
+        quote! {
+            let value: Option<String> = arg.find("=").map(|i| {
+                let (x, y) = arg.split_at(i);
+                arg = x;
+                y[1..].into()
+            });
+            let get_value = |name: &str| -> Result<String> {
+                value.map_or_else(|| {
+                    let value_os = args.next().ok_or_else(|| Error::from(format!("Missing value for `{}`", name)))?;
+                    value_os.into_string().map_err(|_| Error::from(format!("Value for `{}` is an invalid string", name)))
+                }, Ok)
+            };
+            match arg {
+                #(#matches),*,
+                _ => return Err(format!("Invalid switched argument `{}`", arg).into()),
+            }
+        }
     }
 
-    quote! {
-        match num_args {
-            #(#position_matches),*,
-            _ => panic!("Too many positional argumments"),
+    fn gen_position_matcher(&mut self, args: &[Arg]) -> TokenStream {
+        let mut position_matches = Vec::new();
+        for (i, arg) in args.iter().enumerate() {
+            let name = &arg.name;
+            let name_string = name.to_string();
+            let arg_var = format_ident!("arg_{}", name);
+            let missing = format!("Missing argument `{}`", name);
+            let parse = quote! {
+                arg.parse().map_err(
+                    |_| Error::from(format!("Failed to parse argument `{}` from `{}`", #name_string, arg))
+                )?
+            };
+            self.decls.push(quote! { let mut #arg_var = None; });
+            position_matches.push(quote! { #i => #arg_var = Some(#parse) });
+            self.fields.push(quote! {
+                #name: #arg_var.ok_or(Error::from(#missing))?
+            });
         }
-        num_args += 1;
+        self.decls.push(quote! { let mut num_args = 0; });
+
+        quote! {
+            match num_args {
+                #(#position_matches),*,
+                _ => return Err(format!("Too many positional arguments, starting with `{}`", arg).into()),
+            }
+            num_args += 1;
+        }
+    }
+
+    fn gen_impl(name: &Ident, app: &App) -> TokenStream {
+        let mut this = Generator {
+            decls: Vec::new(),
+            fields: Vec::new(),
+            post_matching: Vec::new(),
+        };
+
+        let switch_matcher = this.gen_switch_matcher(&app.by_switch);
+        let position_matcher = this.gen_position_matcher(&app.by_position);
+        let decls = &this.decls;
+        let fields = &this.fields;
+        let post_matching = &this.post_matching;
+        quote!(
+            impl ::miniclap::MiniClap for #name {
+                fn __parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Result<Self, ::miniclap::Error> {
+                    use ::std::string::String;
+                    use ::std::option::Option::{self, Some, None};
+                    use ::std::result::Result::{Ok, Err};
+                    use ::miniclap::{Error, Result};
+
+                    #(#decls)*
+
+                    let _bin_name = args.next();
+                    while let Some(arg_os) = args.next() {
+                        let mut arg: &str = &arg_os.to_str().ok_or_else(|| Error::from("Argument was not valid Unicode"))?;
+                        if arg.chars().next() == Some('-') {
+                            #switch_matcher
+                        } else {
+                            #position_matcher
+                        }
+                    }
+
+                    #(#post_matching)*
+
+                    Ok(Self {
+                        #(#fields),*
+                    })
+                }
+            }
+        )
     }
 }
 
@@ -213,33 +267,6 @@ fn gen_position_matcher(
 pub fn derive_miniclap(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: syn::DeriveInput = syn::parse_macro_input!(input);
     let app = App::from_derive_input(&input);
-
-    let mut decls = Vec::new();
-    let mut fields = Vec::new();
-    let switch_matcher = gen_switch_matcher(&app.by_switch, &mut decls, &mut fields);
-    let position_matcher = gen_position_matcher(&app.by_position, &mut decls, &mut fields);
-
     let name = &input.ident;
-    quote!(
-        impl ::miniclap::MiniClap for #name {
-            fn parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Self {
-                #(#decls)*
-
-                let _bin_name = args.next();
-                while let Some(arg_os) = args.next() {
-                    let mut arg: &str = &arg_os.to_str().unwrap();
-                    if arg.chars().next() == Some('-') {
-                        #switch_matcher
-                    } else {
-                        #position_matcher
-                    }
-                }
-
-                Self {
-                    #(#fields),*
-                }
-            }
-        }
-    )
-    .into()
+    Generator::gen_impl(name, &app).into()
 }
