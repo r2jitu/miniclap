@@ -9,6 +9,7 @@ use syn::{Field, Ident, Lit, Meta};
 enum Attr {
     Short(char),
     Long(String),
+    DefaultValue(Lit),
 }
 
 impl Attr {
@@ -42,6 +43,10 @@ impl Attr {
                 },
                 _ => abort!(attribute, "Invalid specification for `long`"),
             }),
+            "default_value" => Attr::DefaultValue(match attribute {
+                Meta::NameValue(mnv) => mnv.lit.clone(),
+                _ => abort!(attribute, "Attribute must be used as `default_value = ...`"),
+            }),
             _ => abort!(attribute.path(), "Unknown attribute"),
         }
     }
@@ -70,6 +75,7 @@ impl Attr {
 
 struct Arg {
     name: Ident,
+    default_value: Option<Lit>,
 }
 
 /// Argument that is specified by a switch (e.g. -n, --num).
@@ -89,22 +95,27 @@ impl App {
         let mut by_position = Vec::new();
         let mut by_switch = Vec::new();
         for f in &fields.named {
-            let field_ident = f.ident.clone().unwrap();
+            let ident = f.ident.clone().unwrap();
             let attrs = Attr::from_field(f);
-            println!("Attrs for `{}` are: {:?}", field_ident.to_string(), attrs);
+            println!("Attrs for `{}` are: {:?}", ident.to_string(), attrs);
 
             let mut short = None;
             let mut long = None;
+            let mut default_value = None;
 
             for a in attrs {
                 // TODO: Validate the options aren't used multiple times
                 match a {
                     Attr::Short(c) => short = Some(c.to_string()),
                     Attr::Long(name) => long = Some(name),
+                    Attr::DefaultValue(lit) => default_value = Some(lit),
                 }
             }
 
-            let arg = Arg { name: field_ident };
+            let arg = Arg {
+                name: ident,
+                default_value,
+            };
 
             if short.is_some() || long.is_some() {
                 by_switch.push(SwitchedArg { arg, short, long });
@@ -134,6 +145,40 @@ impl App {
     }
 }
 
+impl Arg {
+    fn declare(&self, arg_var: &Ident) -> TokenStream {
+        match &self.default_value {
+            Some(lit) => quote! { let mut #arg_var = #lit; },
+            None => quote! { let mut #arg_var = None; },
+        }
+    }
+
+    fn assign(&self, arg_var: &Ident, value: TokenStream) -> TokenStream {
+        match &self.default_value {
+            Some(_) => quote! { #arg_var = #value },
+            None => quote! { #arg_var = Some(#value) },
+        }
+    }
+
+    fn retrieve(&self, arg_var: &Ident) -> TokenStream {
+        let name_string = self.name.to_string();
+        match &self.default_value {
+            Some(_) => quote! { #arg_var },
+            None => quote! {
+                #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
+            },
+        }
+    }
+}
+
+impl std::ops::Deref for SwitchedArg {
+    type Target = Arg;
+
+    fn deref(&self) -> &Self::Target {
+        &self.arg
+    }
+}
+
 struct Generator {
     decls: Vec<TokenStream>,
     fields: Vec<TokenStream>,
@@ -145,6 +190,8 @@ impl Generator {
         let mut matches = Vec::new();
         for arg in args {
             let name = &arg.arg.name;
+            let arg_var = format_ident!("arg_{}", name);
+            self.decls.push(arg.declare(&arg_var));
 
             let short = arg.short.as_ref().map(|x| format!("-{}", x));
             let long = arg.long.as_ref().map(|x| format!("--{}", x));
@@ -154,19 +201,16 @@ impl Generator {
                 (None, Some(long)) => quote! { #long },
                 _ => unreachable!(),
             };
-
             let name_string = name.to_string();
             let parse = quote! {
                 ::miniclap::__get_value(#name_string, opt_value, &mut args)?.parse()
                     .map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
             };
+            let assign = arg.assign(&arg_var, parse);
+            matches.push(quote! { #pattern => #assign });
 
-            let arg_var = format_ident!("arg_{}", name);
-            self.decls.push(quote! { let mut #arg_var = None; });
-            matches.push(quote! { #pattern => #arg_var = Some(#parse) });
-            self.fields.push(quote! {
-                #name: #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
-            });
+            let retrieve = arg.retrieve(&arg_var);
+            self.fields.push(quote! { #name: #retrieve });
         }
 
         quote! {
@@ -182,16 +226,18 @@ impl Generator {
         let mut position_matches = Vec::new();
         for (i, arg) in args.iter().enumerate() {
             let name = &arg.name;
-            let name_string = name.to_string();
             let arg_var = format_ident!("arg_{}", name);
+            self.decls.push(arg.declare(&arg_var));
+
+            let name_string = name.to_string();
             let parse = quote! {
                 arg.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
             };
-            self.decls.push(quote! { let mut #arg_var = None; });
-            position_matches.push(quote! { #i => #arg_var = Some(#parse) });
-            self.fields.push(quote! {
-                #name: #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
-            });
+            let assign = arg.assign(&arg_var, parse);
+            position_matches.push(quote! { #i => #assign });
+
+            let retrieve = arg.retrieve(&arg_var);
+            self.fields.push(quote! { #name: #retrieve });
         }
         self.decls.push(quote! { let mut num_args = 0; });
 
