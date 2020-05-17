@@ -64,23 +64,23 @@ fn attrs_from_field(f: &Field) -> Vec<Attr> {
 }
 
 struct App {
-    by_pos: Vec<Arg>,
-    by_name: Vec<NamedArg>,
+    by_position: Vec<Arg>,
+    by_switch: Vec<SwitchedArg>,
 }
 
 struct Arg {
     name: Ident,
 }
 
-struct NamedArg {
+struct SwitchedArg {
     arg: Arg,
     short: Option<String>,
     long: Option<String>,
 }
 
 fn extract_options(fields: &mut dyn Iterator<Item = &Field>) -> App {
-    let mut by_pos = Vec::new();
-    let mut by_name = Vec::new();
+    let mut by_position = Vec::new();
+    let mut by_switch = Vec::new();
     for f in fields {
         let attrs = attrs_from_field(f);
         println!(
@@ -104,12 +104,15 @@ fn extract_options(fields: &mut dyn Iterator<Item = &Field>) -> App {
         };
 
         if short.is_some() || long.is_some() {
-            by_name.push(NamedArg { arg, short, long });
+            by_switch.push(SwitchedArg { arg, short, long });
         } else {
-            by_pos.push(arg);
+            by_position.push(arg);
         }
     }
-    App { by_pos, by_name }
+    App {
+        by_position,
+        by_switch,
+    }
 }
 
 #[proc_macro_derive(MiniClap, attributes(miniclap))]
@@ -129,8 +132,8 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
     let mut decls = Vec::new();
     let mut fields = Vec::new();
 
-    let mut name_matches = Vec::new();
-    for arg in opts.by_name {
+    let mut switch_matches = Vec::new();
+    for arg in opts.by_switch {
         let name = &arg.arg.name;
         let arg_name = format_ident!("arg_{}", name);
         let arg_str = name.to_string();
@@ -143,32 +146,28 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
             (None, Some(long)) => quote! { #long },
             _ => panic!(),
         };
-        let assign = quote! {
-            #arg_name = Some(get_value(#arg_str).parse().expect("Invalid argument type"))
+        let parse = quote! {
+            get_value(#arg_str).parse().expect("Invalid argument type")
         };
         decls.push(quote! { let mut #arg_name = None; });
-        name_matches.push(quote! { #pattern => #assign });
+        switch_matches.push(quote! { #pattern => #arg_name = Some(#parse) });
         fields.push(quote! { #name: #arg_name.expect(#missing) });
     }
-    let name_matches = if name_matches.len() > 0 {
-        quote! {
-            match arg {
-                #(#name_matches),*,
-                _ => panic!("Invalid named argument"),
-            }
+    let switch_matches = quote! {
+        match arg {
+            #(#name_matches),*,
+            _ => panic!("Invalid switched argument"),
         }
-    } else {
-        quote! { panic!("No named args expected") }
     };
 
     let mut pos_matches = Vec::new();
-    for (i, arg) in opts.by_pos.iter().enumerate() {
+    for (i, arg) in opts.by_position.iter().enumerate() {
         let name = &arg.name;
         let arg_name = format_ident!("arg_{}", name);
         let missing = format!("Missing argument `{}`", name);
+        let parse = quote! { arg.parse().expect("Invalid argument type") };
         decls.push(quote! { let mut #arg_name = None; });
-        pos_matches
-            .push(quote! { #i => #arg_name = Some(arg.parse().expect("Invalid argument type")) });
+        pos_matches.push(quote! { #i => #arg_name = Some(#parse) });
         fields.push(quote! { #name: #arg_name.expect(#missing) });
     }
     let pos_matches = if pos_matches.len() > 0 {
@@ -182,7 +181,7 @@ pub fn derive_miniclap(input: TokenStream) -> TokenStream {
     } else {
         quote! { panic!("No positional args expected") }
     };
-    if opts.by_pos.len() > 0 {
+    if opts.by_position.len() > 0 {
         decls.push(quote! { let mut num_args = 0; });
     }
 
