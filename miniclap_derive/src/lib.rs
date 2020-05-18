@@ -3,6 +3,7 @@ extern crate proc_macro;
 use proc_macro2::TokenStream;
 use proc_macro_error::{abort, proc_macro_error};
 use quote::{format_ident, quote};
+use std::collections::BTreeSet;
 use syn::{Field, Ident, Lit, Meta};
 
 #[derive(Debug)]
@@ -51,7 +52,7 @@ impl Attr {
         }
     }
 
-    fn from_field(field: &Field) -> Vec<Attr> {
+    fn from_field(field: &Field) -> Vec<(Meta, Attr)> {
         field
             .attrs
             .iter()
@@ -68,7 +69,10 @@ impl Attr {
                 syn::NestedMeta::Lit(l) => abort!(l, "Literals are not valid attributes"),
             })
             // Parse the attribute
-            .map(|meta| Attr::from_field_attribute(&field, &meta))
+            .map(|meta| {
+                let attr = Attr::from_field_attribute(&field, &meta);
+                (meta, attr)
+            })
             .collect()
     }
 }
@@ -91,35 +95,56 @@ struct App {
 
 impl App {
     fn from_named_fields(fields: &syn::FieldsNamed) -> App {
-        let mut by_position = Vec::new();
-        let mut by_switch = Vec::new();
+        let mut by_position: Vec<Arg> = Vec::new();
+        let mut by_switch: Vec<Arg> = Vec::new();
+        let mut short_switches = BTreeSet::new();
+        let mut long_switches = BTreeSet::new();
         for f in &fields.named {
             let ident = f.ident.clone().unwrap();
             let attrs = Attr::from_field(f);
-            println!("Attrs for `{}` are: {:?}", ident.to_string(), attrs);
+            println!(
+                "Attrs for `{}` are: {:?}",
+                ident.to_string(),
+                attrs.iter().map(|(_, a)| a).collect::<Vec<_>>()
+            );
 
             let mut short = None;
             let mut long = None;
             let mut default_value = None;
 
-            for a in attrs {
-                // TODO: Validate the options aren't used multiple times
+            for (m, a) in attrs {
                 match a {
-                    Attr::Short(c) => short = Some(c.to_string()),
-                    Attr::Long(name) => long = Some(name),
-                    Attr::DefaultValue(lit) => default_value = Some(lit),
+                    Attr::Short(c) => {
+                        short
+                            .replace(c.to_string())
+                            .map(|_| abort!(m, "May only specify once"));
+                        if !short_switches.insert(c) {
+                            abort!(m, "Short already used");
+                        }
+                    }
+                    Attr::Long(name) => {
+                        long.replace(name.clone())
+                            .map(|_| abort!(m, "May only specify once"));
+                        if !long_switches.insert(name) {
+                            abort!(m, "Long already used");
+                        }
+                    }
+                    Attr::DefaultValue(lit) => {
+                        default_value
+                            .replace(lit)
+                            .map(|_| abort!(m, "May only specify once"));
+                    }
                 }
             }
 
-            let is_positional = short.is_none() && long.is_none();
-            let mut is_required = true;
-            let mut is_flag = false;
-            let mut is_multiple = false;
-            let index = if is_positional {
+            let index = if short.is_none() && long.is_none() {
                 Some(by_position.len())
             } else {
                 None
             };
+            let mut is_required = true;
+            let mut is_flag = false;
+            let mut is_multiple = false;
 
             match f.ty {
                 syn::Type::Path(syn::TypePath {
@@ -127,7 +152,6 @@ impl App {
                     ..
                 }) => match segments.last().unwrap().ident.to_string().as_str() {
                     "Option" => {
-                        // TODO: Add a check for positional
                         is_required = false;
                     }
                     "Vec" => {
@@ -135,7 +159,7 @@ impl App {
                         is_required = false;
                     }
                     "bool" => {
-                        if !is_positional {
+                        if index.is_none() {
                             is_required = false;
                             is_flag = true;
                         }
@@ -143,6 +167,15 @@ impl App {
                     _ => (),
                 },
                 _ => todo!(),
+            }
+
+            if let Some(prev) = by_position.last() {
+                if is_required && !prev.is_required {
+                    abort!(
+                        f.ty,
+                        "Ambiguous spec: Required arg may not follow optional arg"
+                    );
+                }
             }
 
             let arg = Arg {
@@ -156,7 +189,7 @@ impl App {
                 is_multiple,
             };
 
-            if is_positional {
+            if index.is_some() {
                 by_position.push(arg);
             } else {
                 by_switch.push(arg);
@@ -193,42 +226,38 @@ impl Arg {
         let arg_var = self.arg_var();
         if self.is_flag {
             quote! { let mut #arg_var = false; }
+        } else if self.is_multiple {
+            quote! { let mut #arg_var = Vec::new(); }
+        } else if let Some(lit) = &self.default_value {
+            quote! { let mut #arg_var = #lit; }
         } else {
-            match (self.is_multiple, &self.default_value) {
-                (false, Some(lit)) => quote! { let mut #arg_var = #lit; },
-                (false, None) => quote! { let mut #arg_var = None; },
-                (true, _) => quote! { let mut #arg_var = Vec::new(); },
-            }
+            quote! { let mut #arg_var = None; }
         }
     }
 
     fn pattern(&self) -> TokenStream {
         let short = self.short.as_ref().map(|x| format!("-{}", x));
         let long = self.long.as_ref().map(|x| format!("--{}", x));
-        match (index, short, long) {
+        match (self.index, short, long) {
+            (Some(i), None, None) => quote! { #i },
             (None, Some(short), Some(long)) => quote! { #short | #long },
             (None, Some(short), None) => quote! { #short },
             (None, None, Some(long)) => quote! { #long },
-            (Some(i), None, None) => quote! { #i },
             _ => unreachable!(),
         }
     }
 
     fn parse(&self) -> TokenStream {
         let name_string = self.name.to_string();
-        if self.index.is_some() {
-            quote! {
-                arg.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
-            }
+        let value = if self.index.is_some() {
+            quote! { arg }
         } else {
-            quote! {
-                ::miniclap::__get_value(#name_string, opt_value, &mut args)?.parse()
-                    .map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
-            }
-        }
+            quote! { ::miniclap::__get_value(#name_string, opt_value, &mut args)? }
+        };
+        quote! { #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))? }
     }
 
-    fn assign(&self, value: TokenStream) -> TokenStream {
+    fn store(&self, value: TokenStream) -> TokenStream {
         let arg_var = self.arg_var();
         let name_string = self.name.to_string();
         if self.is_flag {
@@ -251,8 +280,8 @@ impl Arg {
     fn matcher(&self) -> TokenStream {
         let pattern = self.pattern();
         let parse = self.parse();
-        let assign = self.assign(parse);
-        quote! { #pattern => #assign }
+        let store = self.store(parse);
+        quote! { #pattern => #store }
     }
 
     fn retrieve(&self) -> TokenStream {
