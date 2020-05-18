@@ -5,8 +5,8 @@ struct Opts {
     #[miniclap(short = "x", long)]
     first: bool,
 
-    #[miniclap(short, long = "sec")]
-    second: i64,
+    #[miniclap(short, long = "sec", default_value = 100)]
+    second: Vec<i64>,
 
     pos: String,
 

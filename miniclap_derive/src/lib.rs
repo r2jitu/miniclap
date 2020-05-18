@@ -77,6 +77,7 @@ struct Arg {
     name: Ident,
     default_value: Option<Lit>,
     is_required: bool,
+    is_multiple: bool,
 }
 
 /// Argument that is specified by a switch (e.g. -n, --num).
@@ -117,6 +118,7 @@ impl App {
             let is_positional = short.is_none() && long.is_none();
             let mut is_required = true;
             let mut is_flag = false;
+            let mut is_multiple = false;
 
             match f.ty {
                 syn::Type::Path(syn::TypePath {
@@ -125,6 +127,10 @@ impl App {
                 }) => match segments.last().unwrap().ident.to_string().as_str() {
                     "Option" => {
                         // TODO: Add a check for positional
+                        is_required = false;
+                    }
+                    "Vec" => {
+                        is_multiple = true;
                         is_required = false;
                     }
                     "bool" => {
@@ -143,6 +149,7 @@ impl App {
                 name: ident,
                 default_value,
                 is_required,
+                is_multiple,
             };
 
             if is_positional {
@@ -180,32 +187,36 @@ impl App {
 
 impl Arg {
     fn declare(&self, arg_var: &Ident) -> TokenStream {
-        match &self.default_value {
-            Some(lit) => quote! { let mut #arg_var = #lit; },
-            None => quote! { let mut #arg_var = None; },
+        match (self.is_multiple, &self.default_value) {
+            (false, Some(lit)) => quote! { let mut #arg_var = #lit; },
+            (false, None) => quote! { let mut #arg_var = None; },
+            (true, _) => quote! { let mut #arg_var = Vec::new(); },
         }
     }
 
     fn assign(&self, arg_var: &Ident, value: TokenStream) -> TokenStream {
-        match &self.default_value {
-            Some(_) => quote! { #arg_var = #value },
-            None => quote! { #arg_var = Some(#value) },
+        match (self.is_multiple, &self.default_value) {
+            (false, Some(_)) => quote! { #arg_var = #value },
+            (false, None) => quote! { #arg_var = Some(#value) },
+            (true, _) => quote! { #arg_var.push(#value) },
         }
     }
 
     fn retrieve(&self, arg_var: &Ident) -> TokenStream {
         let name_string = self.name.to_string();
-        match &self.default_value {
-            Some(_) => quote! { #arg_var },
-            None => {
-                if self.is_required {
-                    quote! {
-                        #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
-                    }
-                } else {
-                    quote! { #arg_var }
+        match (self.is_multiple, &self.default_value, self.is_required) {
+            (false, Some(_), _) => quote! { #arg_var },
+            (_, None, false) => quote! { #arg_var },
+            (false, None, true) => quote! {
+                #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
+            },
+            (true, Some(lit), false) => quote! {{
+                if #arg_var.is_empty() {
+                    #arg_var.push(#lit);
                 }
-            }
+                #arg_var
+            }},
+            (true, _, true) => unreachable!("Currently no way to express multiple + required."),
         }
     }
 }
@@ -330,6 +341,7 @@ impl Generator {
             impl ::miniclap::MiniClap for #name {
                 fn __parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Result<Self, ::miniclap::Error> {
                     use ::std::string::String;
+                    use ::std::vec::Vec;
                     use ::std::boxed::Box;
                     use ::std::option::Option::{self, Some, None};
                     use ::std::result::Result::{Ok, Err};
