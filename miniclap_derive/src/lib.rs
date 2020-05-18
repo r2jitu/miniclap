@@ -75,22 +75,18 @@ impl Attr {
 
 struct Arg {
     name: Ident,
+    index: Option<usize>,
+    short: Option<String>,
+    long: Option<String>,
     default_value: Option<Lit>,
+    is_flag: bool,
     is_required: bool,
     is_multiple: bool,
 }
 
-/// Argument that is specified by a switch (e.g. -n, --num).
-struct SwitchedArg {
-    arg: Arg,
-    short: Option<String>,
-    long: Option<String>,
-    is_flag: bool,
-}
-
 struct App {
     by_position: Vec<Arg>,
-    by_switch: Vec<SwitchedArg>,
+    by_switch: Vec<Arg>,
 }
 
 impl App {
@@ -119,6 +115,11 @@ impl App {
             let mut is_required = true;
             let mut is_flag = false;
             let mut is_multiple = false;
+            let index = if is_positional {
+                Some(by_position.len())
+            } else {
+                None
+            };
 
             match f.ty {
                 syn::Type::Path(syn::TypePath {
@@ -134,11 +135,10 @@ impl App {
                         is_required = false;
                     }
                     "bool" => {
-                        if is_positional {
-                            abort!(f.ty, "Flags must have short/long switch enabled");
+                        if !is_positional {
+                            is_required = false;
+                            is_flag = true;
                         }
-                        is_required = false;
-                        is_flag = true;
                     }
                     _ => (),
                 },
@@ -147,7 +147,11 @@ impl App {
 
             let arg = Arg {
                 name: ident,
+                index,
+                short,
+                long,
                 default_value,
+                is_flag,
                 is_required,
                 is_multiple,
             };
@@ -155,12 +159,7 @@ impl App {
             if is_positional {
                 by_position.push(arg);
             } else {
-                by_switch.push(SwitchedArg {
-                    arg,
-                    short,
-                    long,
-                    is_flag,
-                });
+                by_switch.push(arg);
             }
         }
         App {
@@ -186,52 +185,52 @@ impl App {
 }
 
 impl Arg {
-    fn declare(&self, arg_var: &Ident) -> TokenStream {
-        match (self.is_multiple, &self.default_value) {
-            (false, Some(lit)) => quote! { let mut #arg_var = #lit; },
-            (false, None) => quote! { let mut #arg_var = None; },
-            (true, _) => quote! { let mut #arg_var = Vec::new(); },
-        }
+    fn arg_var(&self) -> Ident {
+        format_ident!("arg_{}", &self.name)
     }
 
-    fn assign(&self, arg_var: &Ident, value: TokenStream) -> TokenStream {
-        match (self.is_multiple, &self.default_value) {
-            (false, Some(_)) => quote! { #arg_var = #value },
-            (false, None) => quote! { #arg_var = Some(#value) },
-            (true, _) => quote! { #arg_var.push(#value) },
-        }
-    }
-
-    fn retrieve(&self, arg_var: &Ident) -> TokenStream {
-        let name_string = self.name.to_string();
-        match (self.is_multiple, &self.default_value, self.is_required) {
-            (false, Some(_), _) => quote! { #arg_var },
-            (_, None, false) => quote! { #arg_var },
-            (false, None, true) => quote! {
-                #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
-            },
-            (true, Some(lit), false) => quote! {{
-                if #arg_var.is_empty() {
-                    #arg_var.push(#lit);
-                }
-                #arg_var
-            }},
-            (true, _, true) => unreachable!("Currently no way to express multiple + required."),
-        }
-    }
-}
-
-impl SwitchedArg {
-    fn declare(&self, arg_var: &Ident) -> TokenStream {
+    fn declare(&self) -> TokenStream {
+        let arg_var = self.arg_var();
         if self.is_flag {
             quote! { let mut #arg_var = false; }
         } else {
-            self.arg.declare(arg_var)
+            match (self.is_multiple, &self.default_value) {
+                (false, Some(lit)) => quote! { let mut #arg_var = #lit; },
+                (false, None) => quote! { let mut #arg_var = None; },
+                (true, _) => quote! { let mut #arg_var = Vec::new(); },
+            }
         }
     }
 
-    fn assign(&self, arg_var: &Ident, value: TokenStream) -> TokenStream {
-        let name_string = self.arg.name.to_string();
+    fn pattern(&self) -> TokenStream {
+        let short = self.short.as_ref().map(|x| format!("-{}", x));
+        let long = self.long.as_ref().map(|x| format!("--{}", x));
+        match (index, short, long) {
+            (None, Some(short), Some(long)) => quote! { #short | #long },
+            (None, Some(short), None) => quote! { #short },
+            (None, None, Some(long)) => quote! { #long },
+            (Some(i), None, None) => quote! { #i },
+            _ => unreachable!(),
+        }
+    }
+
+    fn parse(&self) -> TokenStream {
+        let name_string = self.name.to_string();
+        if self.index.is_some() {
+            quote! {
+                arg.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
+            }
+        } else {
+            quote! {
+                ::miniclap::__get_value(#name_string, opt_value, &mut args)?.parse()
+                    .map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
+            }
+        }
+    }
+
+    fn assign(&self, value: TokenStream) -> TokenStream {
+        let arg_var = self.arg_var();
+        let name_string = self.name.to_string();
         if self.is_flag {
             quote! {
                 #arg_var = match opt_value.map(|v| v.parse()) {
@@ -241,16 +240,48 @@ impl SwitchedArg {
                 }
             }
         } else {
-            self.arg.assign(arg_var, value)
+            match (self.is_multiple, &self.default_value) {
+                (false, Some(_)) => quote! { #arg_var = #value },
+                (false, None) => quote! { #arg_var = Some(#value) },
+                (true, _) => quote! { #arg_var.push(#value) },
+            }
         }
     }
 
-    fn retrieve(&self, arg_var: &Ident) -> TokenStream {
+    fn matcher(&self) -> TokenStream {
+        let pattern = self.pattern();
+        let parse = self.parse();
+        let assign = self.assign(parse);
+        quote! { #pattern => #assign }
+    }
+
+    fn retrieve(&self) -> TokenStream {
+        let arg_var = self.arg_var();
+        let name_string = self.name.to_string();
         if self.is_flag {
             quote! { #arg_var }
         } else {
-            self.arg.retrieve(arg_var)
+            match (self.is_multiple, &self.default_value, self.is_required) {
+                (false, Some(_), _) => quote! { #arg_var },
+                (_, None, false) => quote! { #arg_var },
+                (false, None, true) => quote! {
+                    #arg_var.ok_or_else(|| Error::missing_required_argument(#name_string))?
+                },
+                (true, Some(lit), false) => quote! {{
+                    if #arg_var.is_empty() {
+                        #arg_var.push(#lit);
+                    }
+                    #arg_var
+                }},
+                (true, _, true) => unreachable!("Currently no way to express multiple + required."),
+            }
         }
+    }
+
+    fn field(&self) -> TokenStream {
+        let name = &self.name;
+        let retrieve = self.retrieve();
+        quote! { #name: #retrieve }
     }
 }
 
@@ -261,65 +292,42 @@ struct Generator {
 }
 
 impl Generator {
-    fn gen_switch_matcher(&mut self, args: &[SwitchedArg]) -> TokenStream {
+    fn add_args(&mut self, args: &[Arg]) -> Vec<TokenStream> {
         let mut matches = Vec::new();
         for arg in args {
-            let name = &arg.arg.name;
-            let arg_var = format_ident!("arg_{}", name);
-            self.decls.push(arg.declare(&arg_var));
+            self.decls.push(arg.declare());
+            matches.push(arg.matcher());
+            self.fields.push(arg.field());
+        }
+        matches
+    }
 
-            let short = arg.short.as_ref().map(|x| format!("-{}", x));
-            let long = arg.long.as_ref().map(|x| format!("--{}", x));
-            let pattern = match (short, long) {
-                (Some(short), Some(long)) => quote! { #short | #long },
-                (Some(short), None) => quote! { #short },
-                (None, Some(long)) => quote! { #long },
-                _ => unreachable!(),
-            };
-            let name_string = name.to_string();
-            let parse = quote! {
-                ::miniclap::__get_value(#name_string, opt_value, &mut args)?.parse()
-                    .map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
-            };
-            let assign = arg.assign(&arg_var, parse);
-            matches.push(quote! { #pattern => #assign });
-
-            let retrieve = arg.retrieve(&arg_var);
-            self.fields.push(quote! { #name: #retrieve });
+    fn gen_switch_matcher(&mut self, args: &[Arg]) -> TokenStream {
+        if args.is_empty() {
+            return quote! { return Err(Error::unknown_switch(arg)) };
         }
 
+        let matches = self.add_args(args);
         quote! {
             let opt_value = ::miniclap::__split_arg_value(&mut arg);
             match arg {
                 #(#matches),*,
-                _ => return Err(Error::unknown_argument(arg)),
+                _ => return Err(Error::unknown_switch(arg)),
             }
         }
     }
 
     fn gen_position_matcher(&mut self, args: &[Arg]) -> TokenStream {
-        let mut position_matches = Vec::new();
-        for (i, arg) in args.iter().enumerate() {
-            let name = &arg.name;
-            let arg_var = format_ident!("arg_{}", name);
-            self.decls.push(arg.declare(&arg_var));
-
-            let name_string = name.to_string();
-            let parse = quote! {
-                arg.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
-            };
-            let assign = arg.assign(&arg_var, parse);
-            position_matches.push(quote! { #i => #assign });
-
-            let retrieve = arg.retrieve(&arg_var);
-            self.fields.push(quote! { #name: #retrieve });
+        if args.is_empty() {
+            return quote! { return Err(Error::too_many_positional(arg)) };
         }
-        self.decls.push(quote! { let mut num_args = 0; });
 
+        let matches = self.add_args(args);
+        self.decls.push(quote! { let mut num_args = 0; });
         quote! {
             match num_args {
-                #(#position_matches),*,
-                _ => return Err(Error::too_many_arguments(arg)),
+                #(#matches),*,
+                _ => return Err(Error::too_many_positional(arg)),
             }
             num_args += 1;
         }
@@ -339,7 +347,9 @@ impl Generator {
         let post_matching = &this.post_matching;
         quote!(
             impl ::miniclap::MiniClap for #name {
-                fn __parse_internal(mut args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Result<Self, ::miniclap::Error> {
+                fn __parse_internal(
+                    mut args: &mut dyn ::std::iter::Iterator<Item = ::std::ffi::OsString>,
+                ) -> ::std::result::Result<Self, ::miniclap::Error> {
                     use ::std::string::String;
                     use ::std::vec::Vec;
                     use ::std::boxed::Box;

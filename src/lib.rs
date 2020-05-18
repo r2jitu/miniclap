@@ -42,8 +42,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum ErrorKind {
     ParseFailed,
-    UnknownArgument,
-    TooManyArguments,
+    UnknownSwitch,
+    TooManyPositional,
     MissingRequiredArgument,
     InvalidUtf8,
     Other,
@@ -70,18 +70,18 @@ impl Error {
         }
     }
 
-    pub fn unknown_argument(name: &str) -> Error {
+    pub fn unknown_switch(name: &str) -> Error {
         Error {
-            message: format!("Did not recognize argument '{}'", name),
-            kind: ErrorKind::UnknownArgument,
+            message: format!("Did not recognize switched argument '{}'", name),
+            kind: ErrorKind::UnknownSwitch,
             source: None,
         }
     }
 
-    pub fn too_many_arguments(arg: &str) -> Error {
+    pub fn too_many_positional(arg: &str) -> Error {
         Error {
-            message: format!("Too many arguments, starting with '{}'", arg),
-            kind: ErrorKind::TooManyArguments,
+            message: format!("Too many positional arguments, starting with '{}'", arg),
+            kind: ErrorKind::TooManyPositional,
             source: None,
         }
     }
@@ -125,7 +125,7 @@ impl std::fmt::Display for Error {
 
 /// Split a switch argument at '=' if it exists.
 pub fn __split_arg_value(arg: &mut &str) -> Option<String> {
-    arg.find("=").map(|i| {
+    arg.find('=').map(|i| {
         let (x, y) = arg.split_at(i);
         *arg = x;
         y[1..].into()
