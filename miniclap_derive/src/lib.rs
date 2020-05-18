@@ -169,15 +169,6 @@ impl App {
                 _ => todo!(),
             }
 
-            if let Some(prev) = by_position.last() {
-                if is_required && !prev.is_required {
-                    abort!(
-                        f.ty,
-                        "Ambiguous spec: Required arg may not follow optional arg"
-                    );
-                }
-            }
-
             let arg = Arg {
                 name: ident,
                 index,
@@ -190,6 +181,22 @@ impl App {
             };
 
             if index.is_some() {
+                if let Some(prev) = by_position.last() {
+                    if is_required && !prev.is_required {
+                        abort!(
+                            f.ty,
+                            "Required positional argument may not follow optional/multiple \
+                            positional argument"
+                        );
+                    } else if prev.is_multiple {
+                        abort!(
+                            f,
+                            "Previous positional argument was multiple so no other positional args \
+                            may follow"
+                        );
+                    }
+                }
+
                 by_position.push(arg);
             } else {
                 by_switch.push(arg);
@@ -239,7 +246,13 @@ impl Arg {
         let short = self.short.as_ref().map(|x| format!("-{}", x));
         let long = self.long.as_ref().map(|x| format!("--{}", x));
         match (self.index, short, long) {
-            (Some(i), None, None) => quote! { #i },
+            (Some(i), None, None) => {
+                if self.is_multiple {
+                    quote! { _ }
+                } else {
+                    quote! { #i }
+                }
+            }
             (None, Some(short), Some(long)) => quote! { #short | #long },
             (None, Some(short), None) => quote! { #short },
             (None, None, Some(long)) => quote! { #long },
@@ -321,6 +334,14 @@ struct Generator {
 }
 
 impl Generator {
+    fn new() -> Generator {
+        Generator {
+            decls: Vec::new(),
+            fields: Vec::new(),
+            post_matching: Vec::new(),
+        }
+    }
+
     fn add_args(&mut self, args: &[Arg]) -> Vec<TokenStream> {
         let mut matches = Vec::new();
         for arg in args {
@@ -363,12 +384,7 @@ impl Generator {
     }
 
     fn gen_impl(name: &Ident, app: &App) -> TokenStream {
-        let mut this = Generator {
-            decls: Vec::new(),
-            fields: Vec::new(),
-            post_matching: Vec::new(),
-        };
-
+        let mut this = Generator::new();
         let switch_matcher = this.gen_switch_matcher(&app.by_switch);
         let position_matcher = this.gen_position_matcher(&app.by_position);
         let decls = &this.decls;

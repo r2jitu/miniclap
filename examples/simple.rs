@@ -10,10 +10,10 @@ struct Opts {
 
     pos: String,
 
-    count: u8,
+    count: Vec<u8>,
 }
 
 fn main() {
     let opts = Opts::parse_or_exit();
-    println!("opts = {:?}", opts);
+    println!("{:#?}", opts);
 }
