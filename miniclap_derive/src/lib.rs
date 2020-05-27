@@ -52,7 +52,7 @@ impl Attr {
         }
     }
 
-    fn from_field(field: &Field) -> Vec<(Meta, Attr)> {
+    fn all_from_field(field: &Field) -> Vec<(Meta, Attr)> {
         field
             .attrs
             .iter()
@@ -101,12 +101,7 @@ impl App {
         let mut long_switches = BTreeSet::new();
         for f in &fields.named {
             let ident = f.ident.clone().unwrap();
-            let attrs = Attr::from_field(f);
-            println!(
-                "Attrs for `{}` are: {:?}",
-                ident.to_string(),
-                attrs.iter().map(|(_, a)| a).collect::<Vec<_>>()
-            );
+            let attrs = Attr::all_from_field(f);
 
             let mut short = None;
             let mut long = None;
@@ -330,7 +325,6 @@ impl Arg {
 struct Generator {
     decls: Vec<TokenStream>,
     fields: Vec<TokenStream>,
-    post_matching: Vec<TokenStream>,
 }
 
 impl Generator {
@@ -338,7 +332,6 @@ impl Generator {
         Generator {
             decls: Vec::new(),
             fields: Vec::new(),
-            post_matching: Vec::new(),
         }
     }
 
@@ -389,7 +382,6 @@ impl Generator {
         let position_matcher = this.gen_position_matcher(&app.by_position);
         let decls = &this.decls;
         let fields = &this.fields;
-        let post_matching = &this.post_matching;
         quote!(
             impl ::miniclap::MiniClap for #name {
                 fn __parse_internal(
@@ -407,14 +399,12 @@ impl Generator {
                     let _bin_name = args.next();
                     while let Some(arg_os) = args.next() {
                         let mut arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
-                        if arg.chars().next() == Some('-') {
+                        if arg.starts_with('-') {
                             #switch_matcher
                         } else {
                             #position_matcher
                         }
                     }
-
-                    #(#post_matching)*
 
                     Ok(Self {
                         #(#fields),*
