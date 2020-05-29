@@ -1,6 +1,6 @@
 pub use miniclap_derive::MiniClap;
 use std::error::Error as StdError;
-use std::ffi::OsString;
+use std::{cell::UnsafeCell, ffi::OsString};
 
 pub trait MiniClap: Sized {
     #[inline]
@@ -45,6 +45,7 @@ pub enum ErrorKind {
     UnknownSwitch,
     TooManyPositional,
     MissingRequiredArgument,
+    UnexpectedValue,
     InvalidUtf8,
     Other,
 }
@@ -70,9 +71,17 @@ impl Error {
         }
     }
 
+    pub fn unknown_long(name: &str) -> Error {
+        Self::unknown_switch(&format!("--{}", name))
+    }
+
+    pub fn unknown_short(name: char) -> Error {
+        Self::unknown_switch(&format!("-{}", name))
+    }
+
     pub fn unknown_switch(name: &str) -> Error {
         Error {
-            message: format!("Did not recognize switched argument '{}'", name),
+            message: format!("Did not recognize argument '{}'", name),
             kind: ErrorKind::UnknownSwitch,
             source: None,
         }
@@ -90,6 +99,14 @@ impl Error {
         Error {
             message: format!("Missing required argument '{}'", arg_name),
             kind: ErrorKind::MissingRequiredArgument,
+            source: None,
+        }
+    }
+
+    pub fn unexpected_value(arg_name: &str) -> Error {
+        Error {
+            message: format!("Flag '{}' cannot take a value", arg_name),
+            kind: ErrorKind::UnexpectedValue,
             source: None,
         }
     }
@@ -135,16 +152,201 @@ pub fn __split_arg_value(arg: &mut &str) -> Option<String> {
 /// Gets an argument value from after '=' or from the next argument in the list.
 pub fn __get_value(
     name: &str,
-    value: Option<String>,
+    opt_value: Option<String>,
     args: &mut dyn Iterator<Item = ::std::ffi::OsString>,
 ) -> Result<String> {
-    value.map_or_else(
-        || {
-            let value_os = args
-                .next()
-                .ok_or_else(|| Error::missing_required_argument(name))?;
-            value_os.into_string().map_err(|_| Error::invalid_utf8())
+    match opt_value {
+        Some(value) => Ok(value),
+        None => match args.next().map(OsString::into_string) {
+            Some(Ok(value)) => Ok(value),
+            Some(Err(_)) => Err(Error::invalid_utf8()),
+            None => Err(Error::missing_required_argument(name)),
         },
-        Ok,
-    )
+    }
+}
+
+pub struct WithCell<T: ?Sized> {
+    value: UnsafeCell<T>,
+}
+
+impl<T> WithCell<T> {
+    pub fn new(value: T) -> WithCell<T> {
+        WithCell {
+            value: UnsafeCell::new(value),
+        }
+    }
+}
+
+impl<T: ?Sized> WithCell<T> {
+    pub fn with<U, F: FnOnce(&mut T) -> U>(&self, f: F) -> U {
+        f(unsafe { &mut *self.value.get() })
+    }
+}
+
+pub struct ArgHandlers<'a> {
+    flags: &'a [FlagHandler<'a>],
+    options: &'a [OptionHandler<'a>],
+    positions: &'a [PositionalHandler<'a>],
+}
+
+pub struct FlagHandler<'a> {
+    name: &'a str,
+    short: Option<char>,
+    long: Option<&'a str>,
+    assign: &'a WithCell<dyn FnMut() -> Result<()> + 'a>,
+}
+
+pub struct OptionHandler<'a> {
+    name: &'a str,
+    short: Option<char>,
+    long: Option<&'a str>,
+    assign: &'a WithCell<dyn FnMut(String) -> Result<()> + 'a>,
+}
+
+pub struct PositionalHandler<'a> {
+    name: &'a str,
+    assign: &'a WithCell<dyn FnMut(String) -> Result<()> + 'a>,
+}
+
+impl<'a> ArgHandlers<'a> {
+    fn flag_by_short(&self, c: char) -> Option<&FlagHandler<'a>> {
+        self.flags.iter().find(|h| h.short == Some(c))
+    }
+
+    fn flag_by_long(&self, l: &str) -> Option<&FlagHandler<'a>> {
+        self.flags.iter().find(|h| h.long == Some(l))
+    }
+
+    fn option_by_short(&self, c: char) -> Option<&OptionHandler<'a>> {
+        self.options.iter().find(|h| h.short == Some(c))
+    }
+
+    fn option_by_long(&self, l: &str) -> Option<&OptionHandler<'a>> {
+        self.options.iter().find(|h| h.long == Some(l))
+    }
+}
+
+pub fn __parse_args<'a>(
+    args: &mut dyn Iterator<Item = OsString>,
+    handlers: &ArgHandlers<'a>,
+) -> Result<()> {
+    let mut num_args = 0;
+    let _bin_name = args.next();
+    while let Some(arg_os) = args.next() {
+        let arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
+
+        // Match on the first two characters and remainder
+        let mut chars = arg.chars();
+        match (chars.next(), chars.next(), chars.as_str()) {
+            (Some('-'), Some('-'), "") => todo!("Trailing args"),
+
+            // Long argument
+            (Some('-'), Some('-'), arg) => {
+                // Split at '=' if it exists.
+                let (arg, opt_value) = match arg.find('=') {
+                    Some(i) => {
+                        let (x, y) = arg.split_at(i);
+                        (x, Some(y[1..].into()))
+                    }
+                    None => (arg, None),
+                };
+                match (
+                    handlers.flag_by_long(arg),
+                    handlers.option_by_long(arg),
+                    opt_value,
+                ) {
+                    (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
+                    (Some(handler), _, None) => handler.assign.with(|f| f())?,
+                    (_, Some(handler), Some(value)) => handler.assign.with(|f| f(value))?,
+                    (_, Some(handler), None) => {
+                        let value = __get_value(handler.name, None, args)?;
+                        handler.assign.with(|f| f(value))?
+                    }
+                    _ => return Err(Error::unknown_long(arg)),
+                }
+            }
+
+            // Short argument
+            (Some('-'), Some(c), rest) => {
+                match (handlers.flag_by_short(c), handlers.option_by_short(c)) {
+                    // One or more flags
+                    (Some(handler), _) => {
+                        handler.assign.with(|f| f())?;
+                        for c in rest.chars() {
+                            match handlers.flag_by_short(c) {
+                                Some(handler) => handler.assign.with(|f| f())?,
+                                None => return Err(Error::unknown_short(c)),
+                            }
+                        }
+                    }
+                    // One option
+                    (_, Some(handler)) => {
+                        let value = match rest.chars().next() {
+                            None => __get_value(handler.name, None, args)?,
+                            Some('=') => rest[1..].to_string(),
+                            _ => rest.to_string(),
+                        };
+                        handler.assign.with(|f| f(value))?;
+                    }
+                    _ => return Err(Error::unknown_short(c)),
+                }
+            }
+
+            // Positional argument
+            _ => {
+                if num_args < handlers.positions.len() {
+                    let value = arg.to_string();
+                    handlers.positions[num_args].assign.with(|f| f(value))?;
+                    num_args += 1;
+                } else {
+                    return Err(Error::too_many_positional(arg));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn simple() {
+        let mut verbose = 0;
+        let mut option = None;
+        let mut pos = None;
+        let res = __parse_args(
+            &mut ["foo", "--num=10", "-vvv", "hello"]
+                .iter()
+                .map(OsString::from),
+            &ArgHandlers {
+                flags: &[FlagHandler {
+                    name: "verbose",
+                    short: Some('v'),
+                    long: None,
+                    assign: &WithCell::new(|| Ok(verbose += 1)),
+                }],
+                options: &[OptionHandler {
+                    name: "num",
+                    short: None,
+                    long: Some("num"),
+                    assign: &WithCell::new(|x: String| {
+                        Ok(option = Some(
+                            x.parse()
+                                .map_err(|e| Error::parse_failed("num", Box::new(e)))?,
+                        ))
+                    }),
+                }],
+                positions: &[PositionalHandler {
+                    name: "foo",
+                    assign: &WithCell::new(|x: String| Ok(pos = Some(x))),
+                }],
+            },
+        );
+        assert!(res.is_ok());
+        assert_eq!(verbose, 3);
+        assert_eq!(option, Some(10));
+        assert_eq!(pos, Some("hello".to_string()));
+    }
 }
