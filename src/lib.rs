@@ -1,6 +1,9 @@
 pub use miniclap_derive::MiniClap;
 use std::error::Error as StdError;
-use std::{cell::UnsafeCell, ffi::OsString};
+use std::{
+    cell::{RefCell, UnsafeCell},
+    ffi::OsString,
+};
 
 pub trait MiniClap: Sized {
     #[inline]
@@ -165,24 +168,6 @@ pub fn __get_value(
     }
 }
 
-pub struct WithCell<T: ?Sized> {
-    value: UnsafeCell<T>,
-}
-
-impl<T> WithCell<T> {
-    pub fn new(value: T) -> WithCell<T> {
-        WithCell {
-            value: UnsafeCell::new(value),
-        }
-    }
-}
-
-impl<T: ?Sized> WithCell<T> {
-    pub fn with<U, F: FnOnce(&mut T) -> U>(&self, f: F) -> U {
-        f(unsafe { &mut *self.value.get() })
-    }
-}
-
 pub struct ArgHandlers<'a> {
     flags: &'a [FlagHandler<'a>],
     options: &'a [OptionHandler<'a>],
@@ -193,19 +178,19 @@ pub struct FlagHandler<'a> {
     name: &'a str,
     short: Option<char>,
     long: Option<&'a str>,
-    assign: &'a WithCell<dyn FnMut() -> Result<()> + 'a>,
+    assign: &'a RefCell<dyn FnMut() -> Result<()> + 'a>,
 }
 
 pub struct OptionHandler<'a> {
     name: &'a str,
     short: Option<char>,
     long: Option<&'a str>,
-    assign: &'a WithCell<dyn FnMut(String) -> Result<()> + 'a>,
+    assign: &'a RefCell<dyn FnMut(String) -> Result<()> + 'a>,
 }
 
 pub struct PositionalHandler<'a> {
     name: &'a str,
-    assign: &'a WithCell<dyn FnMut(String) -> Result<()> + 'a>,
+    assign: &'a RefCell<dyn FnMut(String) -> Result<()> + 'a>,
 }
 
 impl<'a> ArgHandlers<'a> {
@@ -256,11 +241,11 @@ pub fn __parse_args<'a>(
                     opt_value,
                 ) {
                     (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
-                    (Some(handler), _, None) => handler.assign.with(|f| f())?,
-                    (_, Some(handler), Some(value)) => handler.assign.with(|f| f(value))?,
+                    (Some(handler), _, None) => (&mut *handler.assign.borrow_mut())()?,
+                    (_, Some(handler), Some(value)) => (&mut *handler.assign.borrow_mut())(value)?,
                     (_, Some(handler), None) => {
                         let value = __get_value(handler.name, None, args)?;
-                        handler.assign.with(|f| f(value))?
+                        (&mut *handler.assign.borrow_mut())(value)?
                     }
                     _ => return Err(Error::unknown_long(arg)),
                 }
@@ -271,10 +256,10 @@ pub fn __parse_args<'a>(
                 match (handlers.flag_by_short(c), handlers.option_by_short(c)) {
                     // One or more flags
                     (Some(handler), _) => {
-                        handler.assign.with(|f| f())?;
+                        (&mut *handler.assign.borrow_mut())()?;
                         for c in rest.chars() {
                             match handlers.flag_by_short(c) {
-                                Some(handler) => handler.assign.with(|f| f())?,
+                                Some(handler) => (&mut *handler.assign.borrow_mut())()?,
                                 None => return Err(Error::unknown_short(c)),
                             }
                         }
@@ -286,7 +271,7 @@ pub fn __parse_args<'a>(
                             Some('=') => rest[1..].to_string(),
                             _ => rest.to_string(),
                         };
-                        handler.assign.with(|f| f(value))?;
+                        (&mut *handler.assign.borrow_mut())(value)?;
                     }
                     _ => return Err(Error::unknown_short(c)),
                 }
@@ -296,7 +281,7 @@ pub fn __parse_args<'a>(
             _ => {
                 if num_args < handlers.positions.len() {
                     let value = arg.to_string();
-                    handlers.positions[num_args].assign.with(|f| f(value))?;
+                    (&mut *handlers.positions[num_args].assign.borrow_mut())(value)?;
                     num_args += 1;
                 } else {
                     return Err(Error::too_many_positional(arg));
@@ -325,13 +310,13 @@ mod tests {
                     name: "verbose",
                     short: Some('v'),
                     long: None,
-                    assign: &WithCell::new(|| Ok(verbose += 1)),
+                    assign: &RefCell::new(|| Ok(verbose += 1)),
                 }],
                 options: &[OptionHandler {
                     name: "num",
                     short: None,
                     long: Some("num"),
-                    assign: &WithCell::new(|x: String| {
+                    assign: &RefCell::new(|x: String| {
                         Ok(option = Some(
                             x.parse()
                                 .map_err(|e| Error::parse_failed("num", Box::new(e)))?,
@@ -340,7 +325,7 @@ mod tests {
                 }],
                 positions: &[PositionalHandler {
                     name: "foo",
-                    assign: &WithCell::new(|x: String| Ok(pos = Some(x))),
+                    assign: &RefCell::new(|x: String| Ok(pos = Some(x))),
                 }],
             },
         );
