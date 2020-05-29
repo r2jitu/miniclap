@@ -80,7 +80,7 @@ impl Attr {
 struct Arg {
     name: Ident,
     index: Option<usize>,
-    short: Option<String>,
+    short: Option<char>,
     long: Option<String>,
     default_value: Option<Lit>,
     is_flag: bool,
@@ -110,24 +110,25 @@ impl App {
             for (m, a) in attrs {
                 match a {
                     Attr::Short(c) => {
-                        short
-                            .replace(c.to_string())
-                            .map(|_| abort!(m, "May only specify once"));
+                        if short.replace(c).is_some() {
+                            abort!(m, "May only specify once");
+                        }
                         if !short_switches.insert(c) {
                             abort!(m, "Short already used");
                         }
                     }
                     Attr::Long(name) => {
-                        long.replace(name.clone())
-                            .map(|_| abort!(m, "May only specify once"));
+                        if long.replace(name.clone()).is_some() {
+                            abort!(m, "May only specify once");
+                        }
                         if !long_switches.insert(name) {
                             abort!(m, "Long already used");
                         }
                     }
                     Attr::DefaultValue(lit) => {
-                        default_value
-                            .replace(lit)
-                            .map(|_| abort!(m, "May only specify once"));
+                        if default_value.replace(lit).is_some() {
+                            abort!(m, "May only specify once");
+                        }
                     }
                 }
             }
@@ -237,67 +238,12 @@ impl Arg {
         }
     }
 
-    fn pattern(&self) -> TokenStream {
-        let short = self.short.as_ref().map(|x| format!("-{}", x));
-        let long = self.long.as_ref().map(|x| format!("--{}", x));
-        match (self.index, short, long) {
-            (Some(i), None, None) => {
-                if self.is_multiple {
-                    quote! { _ }
-                } else {
-                    quote! { #i }
-                }
-            }
-            (None, Some(short), Some(long)) => quote! { #short | #long },
-            (None, Some(short), None) => quote! { #short },
-            (None, None, Some(long)) => quote! { #long },
-            _ => unreachable!(),
-        }
-    }
-
-    fn parse(&self) -> TokenStream {
-        let name_string = self.name.to_string();
-        let value = if self.index.is_some() {
-            quote! { arg }
-        } else {
-            quote! { ::miniclap::__get_value(#name_string, opt_value, &mut args)? }
-        };
-        quote! { #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))? }
-    }
-
-    fn store(&self, value: TokenStream) -> TokenStream {
+    fn field(&self) -> TokenStream {
         let arg_var = self.arg_var();
-        let name_string = self.name.to_string();
-        if self.is_flag {
-            quote! {
-                #arg_var = match opt_value.map(|v| v.parse()) {
-                    Some(Ok(v)) => v,
-                    Some(Err(e)) => return Err(Error::parse_failed(#name_string, Box::new(e))),
-                    None => true,
-                }
-            }
-        } else {
-            match (self.is_multiple, &self.default_value) {
-                (false, Some(_)) => quote! { #arg_var = #value },
-                (false, None) => quote! { #arg_var = Some(#value) },
-                (true, _) => quote! { #arg_var.push(#value) },
-            }
-        }
-    }
-
-    fn matcher(&self) -> TokenStream {
-        let pattern = self.pattern();
-        let parse = self.parse();
-        let store = self.store(parse);
-        quote! { #pattern => #store }
-    }
-
-    fn retrieve(&self) -> TokenStream {
-        let arg_var = self.arg_var();
-        let name_string = self.name.to_string();
-        if self.is_flag {
+        let retrieve = if self.is_flag {
             quote! { #arg_var }
         } else {
+            let name_string = self.name.to_string();
             match (self.is_multiple, &self.default_value, self.is_required) {
                 (false, Some(_), _) => quote! { #arg_var },
                 (_, None, false) => quote! { #arg_var },
@@ -312,19 +258,70 @@ impl Arg {
                 }},
                 (true, _, true) => unreachable!("Currently no way to express multiple + required."),
             }
-        }
+        };
+        let name = &self.name;
+        quote! { #name: #retrieve }
     }
 
-    fn field(&self) -> TokenStream {
-        let name = &self.name;
-        let retrieve = self.retrieve();
-        quote! { #name: #retrieve }
+    fn handler(&self) -> TokenStream {
+        let name_string = self.name.to_string();
+        let short = match self.short {
+            Some(c) => quote! { Some(#c) },
+            None => quote! { None },
+        };
+        let long = match self.long {
+            Some(ref l) => quote! { Some(#l) },
+            None => quote! { None },
+        };
+        let arg_var = self.arg_var();
+        if self.is_flag {
+            quote! {
+                FlagHandler {
+                    name: #name_string,
+                    short: #short,
+                    long: #long,
+                    assign: &RefCell::new(|| Ok(#arg_var = true)),
+                }
+            }
+        } else {
+            let value = quote! { value };
+            let parse = quote! {
+                #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
+            };
+            let store = match (self.is_multiple, &self.default_value) {
+                (false, Some(_)) => quote! { #arg_var = #parse },
+                (false, None) => quote! { #arg_var = Some(#parse) },
+                (true, _) => quote! { #arg_var.push(#parse) },
+            };
+            if self.index.is_none() {
+                quote! {
+                    OptionHandler {
+                        name: #name_string,
+                        short: #short,
+                        long: #long,
+                        assign: &RefCell::new(|#value: String| Ok(#store)),
+                    }
+                }
+            } else {
+                let is_multiple = self.is_multiple;
+                quote! {
+                    PositionalHandler {
+                        name: #name_string,
+                        is_multiple: #is_multiple,
+                        assign: &RefCell::new(|#value: String| Ok(#store)),
+                    }
+                }
+            }
+        }
     }
 }
 
 struct Generator {
     decls: Vec<TokenStream>,
     fields: Vec<TokenStream>,
+    flags: Vec<TokenStream>,
+    options: Vec<TokenStream>,
+    positions: Vec<TokenStream>,
 }
 
 impl Generator {
@@ -332,56 +329,34 @@ impl Generator {
         Generator {
             decls: Vec::new(),
             fields: Vec::new(),
+            flags: Vec::new(),
+            options: Vec::new(),
+            positions: Vec::new(),
         }
     }
 
-    fn add_args(&mut self, args: &[Arg]) -> Vec<TokenStream> {
-        let mut matches = Vec::new();
+    fn add_args(&mut self, args: &[Arg]) {
         for arg in args {
             self.decls.push(arg.declare());
-            matches.push(arg.matcher());
             self.fields.push(arg.field());
-        }
-        matches
-    }
-
-    fn gen_switch_matcher(&mut self, args: &[Arg]) -> TokenStream {
-        if args.is_empty() {
-            return quote! { return Err(Error::unknown_switch(arg)) };
-        }
-
-        let matches = self.add_args(args);
-        quote! {
-            let opt_value = ::miniclap::__split_arg_value(&mut arg);
-            match arg {
-                #(#matches),*,
-                _ => return Err(Error::unknown_switch(arg)),
+            let handler = arg.handler();
+            match (arg.is_flag, arg.index) {
+                (true, _) => self.flags.push(handler),
+                (false, None) => self.options.push(handler),
+                (false, Some(_)) => self.positions.push(handler),
             }
-        }
-    }
-
-    fn gen_position_matcher(&mut self, args: &[Arg]) -> TokenStream {
-        if args.is_empty() {
-            return quote! { return Err(Error::too_many_positional(arg)) };
-        }
-
-        let matches = self.add_args(args);
-        self.decls.push(quote! { let mut num_args = 0; });
-        quote! {
-            match num_args {
-                #(#matches),*,
-                _ => return Err(Error::too_many_positional(arg)),
-            }
-            num_args += 1;
         }
     }
 
     fn gen_impl(name: &Ident, app: &App) -> TokenStream {
         let mut this = Generator::new();
-        let switch_matcher = this.gen_switch_matcher(&app.by_switch);
-        let position_matcher = this.gen_position_matcher(&app.by_position);
+        this.add_args(&app.by_switch);
+        this.add_args(&app.by_position);
         let decls = &this.decls;
         let fields = &this.fields;
+        let flags = &this.flags;
+        let options = &this.options;
+        let positions = &this.positions;
         quote!(
             impl ::miniclap::MiniClap for #name {
                 fn __parse_internal(
@@ -392,19 +367,17 @@ impl Generator {
                     use ::std::boxed::Box;
                     use ::std::option::Option::{self, Some, None};
                     use ::std::result::Result::{Ok, Err};
+                    use ::std::cell::RefCell;
                     use ::miniclap::{Error, Result};
+                    use ::miniclap::{ArgHandlers, FlagHandler, OptionHandler, PositionalHandler};
 
                     #(#decls)*
 
-                    let _bin_name = args.next();
-                    while let Some(arg_os) = args.next() {
-                        let mut arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
-                        if arg.starts_with('-') {
-                            #switch_matcher
-                        } else {
-                            #position_matcher
-                        }
-                    }
+                    ::miniclap::parse_args(args, &ArgHandlers {
+                        flags: &[ #(#flags),* ],
+                        options: &[ #(#options),* ],
+                        positions: &[ #(#positions),* ],
+                    })?;
 
                     Ok(Self {
                         #(#fields),*
