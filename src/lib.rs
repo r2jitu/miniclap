@@ -123,28 +123,91 @@ impl std::fmt::Display for Error {
     }
 }
 
-/// Split a switch argument at '=' if it exists.
-pub fn __split_arg_value(arg: &mut &str) -> Option<String> {
-    arg.find('=').map(|i| {
-        let (x, y) = arg.split_at(i);
-        *arg = x;
-        y[1..].into()
-    })
+pub enum Arg {
+    Switch(String),
+    Positional(String),
 }
 
-/// Gets an argument value from after '=' or from the next argument in the list.
-pub fn __get_value(
-    name: &str,
-    value: Option<String>,
-    args: &mut dyn Iterator<Item = ::std::ffi::OsString>,
-) -> Result<String> {
-    value.map_or_else(
-        || {
-            let value_os = args
-                .next()
-                .ok_or_else(|| Error::missing_required_argument(name))?;
-            value_os.into_string().map_err(|_| Error::invalid_utf8())
-        },
-        Ok,
-    )
+pub struct Parser<'a> {
+    args: &'a mut dyn Iterator<Item = OsString>,
+    next_value: Option<String>,
+    next_flags: Vec<char>,
+    cur_is_flag: bool,
+}
+
+impl<'a> Parser<'a> {
+    pub fn new(args: &'a mut dyn Iterator<Item = OsString>) -> Parser<'a> {
+        Parser {
+            args,
+            next_value: None,
+            next_flags: Vec::new(),
+            cur_is_flag: false,
+        }
+    }
+
+    fn next_in(&mut self) -> Result<Option<String>> {
+        match self.args.next() {
+            Some(arg_os) => match arg_os.into_string() {
+                Ok(arg) => Ok(Some(arg)),
+                _ => Err(Error::invalid_utf8()),
+            },
+            None => Ok(None),
+        }
+    }
+
+    pub fn next_arg(&mut self) -> Result<Option<Arg>> {
+        if let Some(ref value) = self.next_value {
+            panic!("Next value was not consumed: '{}'", value);
+        }
+        if let Some(flag) = self.next_flags.pop() {
+            self.cur_is_flag = true;
+            return Ok(Some(Arg::Switch(format!("-{}", flag))));
+        }
+        self.cur_is_flag = false;
+        let arg = match self.next_in()? {
+            Some(arg) => arg,
+            None => return Ok(None),
+        };
+        let mut chars = arg.chars();
+        let res = match (chars.next(), chars.next(), chars.as_str()) {
+            (Some('-'), Some('-'), "") => todo!("Trailing args"),
+            (Some('-'), Some('-'), arg) => {
+                let (arg, opt_value) = match arg.find('=') {
+                    Some(i) => {
+                        let (x, y) = arg.split_at(i);
+                        (x, Some(y[1..].to_string()))
+                    }
+                    None => (arg, None),
+                };
+                self.next_value = opt_value;
+                Arg::Switch(format!("--{}", arg))
+            }
+            (Some('-'), Some(c), rest) => {
+                if rest.chars().next() == Some('=') {
+                    self.next_value = Some(rest[3..].to_string());
+                } else if rest.contains('=') {
+                    return Err(Error::other("Can't have multiple flags and '=' in same argument"));
+                } else {
+                    self.next_flags.extend(rest.chars().rev());
+                }
+                Arg::Switch(format!("-{}", c))
+            }
+            _ => Arg::Positional(arg),
+        };
+        Ok(Some(res))
+    }
+
+    pub fn next_value(&mut self, name: &str) -> Result<String> {
+        if self.cur_is_flag {
+            Err(Error::other("Option used in a combined flag"))
+        } else if !self.next_flags.is_empty() {
+            Ok(self.next_flags.drain(..).rev().collect())
+        } else if let Some(value) = self.next_value.take() {
+            Ok(value)
+        } else if let Some(value) = self.next_in()? {
+            Ok(value)
+        } else {
+            Err(Error::missing_required_argument(name))
+        }
+    }
 }

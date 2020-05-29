@@ -260,22 +260,15 @@ impl Arg {
         let value = if self.index.is_some() {
             quote! { arg }
         } else {
-            quote! { ::miniclap::__get_value(#name_string, opt_value, &mut args)? }
+            quote! { parser.next_value(#name_string)? }
         };
         quote! { #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))? }
     }
 
     fn store(&self, value: TokenStream) -> TokenStream {
         let arg_var = self.arg_var();
-        let name_string = self.name.to_string();
         if self.is_flag {
-            quote! {
-                #arg_var = match opt_value.map(|v| v.parse()) {
-                    Some(Ok(v)) => v,
-                    Some(Err(e)) => return Err(Error::parse_failed(#name_string, Box::new(e))),
-                    None => true,
-                }
-            }
+            quote! { #arg_var = true }
         } else {
             match (self.is_multiple, &self.default_value) {
                 (false, Some(_)) => quote! { #arg_var = #value },
@@ -347,22 +340,21 @@ impl Generator {
 
     fn gen_switch_matcher(&mut self, args: &[Arg]) -> TokenStream {
         if args.is_empty() {
-            return quote! { return Err(Error::unknown_switch(arg)) };
+            return quote! { return Err(Error::unknown_switch(&arg)) };
         }
 
         let matches = self.add_args(args);
         quote! {
-            let opt_value = ::miniclap::__split_arg_value(&mut arg);
-            match arg {
+            match arg.as_str() {
                 #(#matches),*,
-                _ => return Err(Error::unknown_switch(arg)),
+                _ => return Err(Error::unknown_switch(&arg)),
             }
         }
     }
 
     fn gen_position_matcher(&mut self, args: &[Arg]) -> TokenStream {
         if args.is_empty() {
-            return quote! { return Err(Error::too_many_positional(arg)) };
+            return quote! { return Err(Error::too_many_positional(&arg)) };
         }
 
         let matches = self.add_args(args);
@@ -370,7 +362,7 @@ impl Generator {
         quote! {
             match num_args {
                 #(#matches),*,
-                _ => return Err(Error::too_many_positional(arg)),
+                _ => return Err(Error::too_many_positional(&arg)),
             }
             num_args += 1;
         }
@@ -392,17 +384,20 @@ impl Generator {
                     use ::std::boxed::Box;
                     use ::std::option::Option::{self, Some, None};
                     use ::std::result::Result::{Ok, Err};
-                    use ::miniclap::{Error, Result};
+                    use ::miniclap::{Error, Result, Parser, Arg};
 
                     #(#decls)*
 
                     let _bin_name = args.next();
-                    while let Some(arg_os) = args.next() {
-                        let mut arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
-                        if arg.starts_with('-') {
-                            #switch_matcher
-                        } else {
-                            #position_matcher
+                    let mut parser = Parser::new(args);
+                    while let Some(arg) = parser.next_arg()? {
+                        match arg {
+                            Arg::Switch(arg) => {
+                                #switch_matcher
+                            },
+                            Arg::Positional(arg) => {
+                                #position_matcher
+                            }
                         }
                     }
 
