@@ -1,6 +1,6 @@
 pub use miniclap_derive::MiniClap;
 use std::error::Error as StdError;
-use std::ffi::OsString;
+use std::{ffi::OsString, str::FromStr};
 
 pub trait MiniClap: Sized {
     #[inline]
@@ -123,9 +123,24 @@ impl std::fmt::Display for Error {
     }
 }
 
+pub struct Value(pub String);
+
+impl Value {
+    #[inline]
+    pub fn parse<E, F>(&self, name: &str) -> Result<F>
+    where
+        E: StdError + 'static,
+        F: FromStr<Err = E>,
+    {
+        self.0
+            .parse()
+            .map_err(|e| Error::parse_failed(name, Box::new(e)))
+    }
+}
+
 pub enum Arg {
     Switch(String),
-    Positional(String),
+    Positional(Value),
 }
 
 pub struct Parser<'a> {
@@ -186,13 +201,15 @@ impl<'a> Parser<'a> {
                 if rest.chars().next() == Some('=') {
                     self.next_value = Some(rest[3..].to_string());
                 } else if rest.contains('=') {
-                    return Err(Error::other("Can't have multiple flags and '=' in same argument"));
+                    return Err(Error::other(
+                        "Can't have multiple flags and '=' in same argument",
+                    ));
                 } else {
                     self.next_flags.extend(rest.chars().rev());
                 }
                 Arg::Switch(format!("-{}", c))
             }
-            _ => Arg::Positional(arg),
+            _ => Arg::Positional(Value(arg)),
         };
         Ok(Some(res))
     }
@@ -209,5 +226,13 @@ impl<'a> Parser<'a> {
         } else {
             Err(Error::missing_required_argument(name))
         }
+    }
+
+    pub fn parse_next<E, F>(&mut self, name: &str) -> Result<F>
+    where
+        E: StdError + 'static,
+        F: FromStr<Err = E>,
+    {
+        Value(self.next_value(name)?).parse(name)
     }
 }

@@ -257,12 +257,11 @@ impl Arg {
 
     fn parse(&self) -> TokenStream {
         let name_string = self.name.to_string();
-        let value = if self.index.is_some() {
-            quote! { arg }
+        if self.index.is_some() {
+            quote! { value.parse(#name_string)? }
         } else {
-            quote! { parser.next_value(#name_string)? }
-        };
-        quote! { #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))? }
+            quote! { parser.parse_next(#name_string)? }
+        }
     }
 
     fn store(&self, value: TokenStream) -> TokenStream {
@@ -354,7 +353,7 @@ impl Generator {
 
     fn gen_position_matcher(&mut self, args: &[Arg]) -> TokenStream {
         if args.is_empty() {
-            return quote! { return Err(Error::too_many_positional(&arg)) };
+            return quote! { return Err(Error::too_many_positional(&value.0)) };
         }
 
         let matches = self.add_args(args);
@@ -362,7 +361,7 @@ impl Generator {
         quote! {
             match num_args {
                 #(#matches),*,
-                _ => return Err(Error::too_many_positional(&arg)),
+                _ => return Err(Error::too_many_positional(&value.0)),
             }
             num_args += 1;
         }
@@ -395,7 +394,7 @@ impl Generator {
                             Arg::Switch(arg) => {
                                 #switch_matcher
                             },
-                            Arg::Positional(arg) => {
+                            Arg::Positional(value) => {
                                 #position_matcher
                             }
                         }
