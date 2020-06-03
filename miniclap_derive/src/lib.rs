@@ -280,15 +280,15 @@ impl Arg {
                     name: #name_string,
                     short: #short,
                     long: #long,
-                    assign: &RefCell::new(|| Ok(#arg_var = true)),
+                    assign: &FlagAssign::new(|| #arg_var = true),
                 }
             }
         } else {
             let value = quote! { value };
-            let store = match (self.is_multiple, &self.default_value) {
-                (false, Some(_)) => quote! { #arg_var = #value },
-                (false, None) => quote! { #arg_var = Some(#value) },
-                (true, _) => quote! { #arg_var.push(#value) },
+            let assign = match (self.is_multiple, &self.default_value) {
+                (false, Some(_)) => quote! { |#value| #arg_var = #value },
+                (false, None) => quote! { |#value| #arg_var = Some(#value) },
+                (true, _) => quote! { |#value| #arg_var.push(#value) },
             };
             if self.index.is_none() {
                 quote! {
@@ -296,7 +296,7 @@ impl Arg {
                         name: #name_string,
                         short: #short,
                         long: #long,
-                        assign: &ParsedAssign::new(#name_string, |#value| Ok(#store)),
+                        assign: &ParsedAssign::new(#name_string, #assign),
                     }
                 }
             } else {
@@ -305,7 +305,7 @@ impl Arg {
                     PositionalHandler {
                         name: #name_string,
                         is_multiple: #is_multiple,
-                        assign: &ParsedAssign::new(#name_string, |#value| Ok(#store)),
+                        assign: &ParsedAssign::new(#name_string, #assign),
                     }
                 }
             }
@@ -359,19 +359,14 @@ impl Generator {
                 fn __parse_internal(
                     mut args: &mut dyn ::std::iter::Iterator<Item = ::std::ffi::OsString>,
                 ) -> ::std::result::Result<Self, ::miniclap::Error> {
-                    use ::std::string::String;
+                    use ::miniclap::{FlagHandler, OptionHandler, PositionalHandler};
+                    use ::miniclap::{Error, FlagAssign, ParsedAssign};
                     use ::std::vec::Vec;
-                    use ::std::boxed::Box;
-                    use ::std::option::Option::{self, Some, None};
-                    use ::std::result::Result::{Ok, Err};
-                    use ::std::cell::RefCell;
-                    use ::miniclap::{Error, Result};
-                    use ::miniclap::{ArgHandlers, FlagHandler, OptionHandler, PositionalHandler};
-                    use ::miniclap::ParsedAssign;
+                    use ::std::option::Option::{Some, None};
 
                     #(#decls)*
 
-                    ::miniclap::parse_args(args, &ArgHandlers {
+                    ::miniclap::parse_args(args, &::miniclap::ArgHandlers {
                         flags: &[ #(#flags),* ],
                         options: &[ #(#options),* ],
                         positions: &[ #(#positions),* ],

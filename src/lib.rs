@@ -142,20 +142,20 @@ pub struct FlagHandler<'a> {
     pub name: &'a str,
     pub short: Option<char>,
     pub long: Option<&'a str>,
-    pub assign: &'a RefCell<dyn FnMut() -> Result<()> + 'a>,
+    pub assign: &'a dyn assign::FlagAssign,
 }
 
 pub struct OptionHandler<'a> {
     pub name: &'a str,
     pub short: Option<char>,
     pub long: Option<&'a str>,
-    pub assign: &'a dyn Assign,
+    pub assign: &'a dyn assign::StringAssign,
 }
 
 pub struct PositionalHandler<'a> {
     pub name: &'a str,
     pub is_multiple: bool,
-    pub assign: &'a dyn Assign,
+    pub assign: &'a dyn assign::StringAssign,
 }
 
 impl<'a> ArgHandlers<'a> {
@@ -214,7 +214,7 @@ pub fn parse_args<'a>(
                     opt_value,
                 ) {
                     (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
-                    (Some(handler), _, None) => (&mut *handler.assign.borrow_mut())()?,
+                    (Some(handler), _, None) => handler.assign.assign()?,
                     (_, Some(handler), Some(value)) => handler.assign.assign(value)?,
                     (_, Some(handler), None) => {
                         let value = next_value(handler.name, args)?;
@@ -232,10 +232,10 @@ pub fn parse_args<'a>(
                         if rest.contains('=') {
                             return Err(Error::unexpected_value(&format!("-{}", c)));
                         }
-                        (&mut *handler.assign.borrow_mut())()?;
+                        handler.assign.assign()?;
                         for c in rest.chars() {
                             match handlers.flag_by_short(c) {
-                                Some(handler) => (&mut *handler.assign.borrow_mut())()?,
+                                Some(handler) => handler.assign.assign()?,
                                 None => return Err(Error::unknown_switch(&format!("-{}", c))),
                             }
                         }
@@ -273,8 +273,36 @@ pub fn parse_args<'a>(
     Ok(())
 }
 
-pub trait Assign {
-    fn assign(&self, value: String) -> Result<()>;
+mod assign {
+    use crate::Result;
+
+    pub trait FlagAssign {
+        fn assign(&self) -> Result<()>;
+    }
+
+    pub trait StringAssign {
+        fn assign(&self, value: String) -> Result<()>;
+    }
+}
+
+pub struct FlagAssign<F> {
+    inner: RefCell<F>,
+}
+
+impl<F> FlagAssign<F> {
+    pub fn new(assign: F) -> Self {
+        Self {
+            inner: RefCell::new(assign),
+        }
+    }
+}
+
+impl<F: FnMut()> assign::FlagAssign for FlagAssign<F> {
+    #[inline]
+    fn assign(&self) -> Result<()> {
+        (&mut *self.inner.borrow_mut())();
+        Ok(())
+    }
 }
 
 pub struct ParsedAssign<'a, T, F> {
@@ -293,18 +321,19 @@ impl<'a, T, F> ParsedAssign<'a, T, F> {
     }
 }
 
-impl<T, F> Assign for ParsedAssign<'_, T, F>
+impl<T, F> assign::StringAssign for ParsedAssign<'_, T, F>
 where
     T: FromStr,
     <T as FromStr>::Err: StdError + 'static,
-    F: FnMut(T) -> Result<()>,
+    F: FnMut(T),
 {
     #[inline]
     fn assign(&self, value: String) -> Result<()> {
         let parsed: T = value
             .parse()
             .map_err(|e| Error::parse_failed(self.name, Box::new(e)))?;
-        (&mut *self.assign.borrow_mut())(parsed)
+        (&mut *self.assign.borrow_mut())(parsed);
+        Ok(())
     }
 }
 
@@ -326,18 +355,18 @@ mod tests {
                     name: "verbose",
                     short: Some('v'),
                     long: None,
-                    assign: &RefCell::new(|| Ok(verbose += 1)),
+                    assign: &FlagAssign::new(|| verbose += 1),
                 }],
                 options: &[OptionHandler {
                     name: "num",
                     short: None,
                     long: Some("num"),
-                    assign: &ParsedAssign::new("num", &mut |x| Ok(option = Some(x))),
+                    assign: &ParsedAssign::new("num", &mut |x| option = Some(x)),
                 }],
                 positions: &[PositionalHandler {
                     name: "foo",
                     is_multiple: false,
-                    assign: &ParsedAssign::new("foo", &mut |x| Ok(pos = Some(x))),
+                    assign: &ParsedAssign::new("foo", &mut |x| pos = Some(x)),
                 }],
             },
         );
