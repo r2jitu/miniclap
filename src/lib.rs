@@ -48,15 +48,13 @@ pub struct ArgHandlers<'a> {
 
 pub struct FlagHandler<'a> {
     pub name: &'a str,
-    pub short: Option<char>,
-    pub long: Option<&'a str>,
+    pub switch: Switch<'a>,
     pub assign: &'a dyn assign::FlagAssign,
 }
 
 pub struct OptionHandler<'a> {
     pub name: &'a str,
-    pub short: Option<char>,
-    pub long: Option<&'a str>,
+    pub switch: Switch<'a>,
     pub assign: &'a dyn assign::StringAssign,
 }
 
@@ -66,21 +64,57 @@ pub struct PositionalHandler<'a> {
     pub assign: &'a dyn assign::StringAssign,
 }
 
+pub enum Switch<'a> {
+    Short(char),
+    Long(&'a str),
+    Both(char, &'a str),
+}
+
+mod assign {
+    use crate::Result;
+
+    pub trait FlagAssign {
+        fn assign(&self) -> Result<()>;
+    }
+
+    pub trait StringAssign {
+        fn assign(&self, value: String) -> Result<()>;
+    }
+}
+
+impl PartialEq<char> for Switch<'_> {
+    fn eq(&self, other: &char) -> bool {
+        match self {
+            Switch::Short(c) | Switch::Both(c, _) => c == other,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<&'_ str> for Switch<'_> {
+    fn eq(&self, other: &&str) -> bool {
+        match self {
+            Switch::Long(l) | Switch::Both(_, l) => l == other,
+            _ => false,
+        }
+    }
+}
+
 impl<'a> ArgHandlers<'a> {
     fn flag_by_short(&self, c: char) -> Option<&FlagHandler<'a>> {
-        self.flags.iter().find(|h| h.short == Some(c))
+        self.flags.iter().find(|h| h.switch == c)
     }
 
     fn flag_by_long(&self, l: &str) -> Option<&FlagHandler<'a>> {
-        self.flags.iter().find(|h| h.long == Some(l))
+        self.flags.iter().find(|h| h.switch == l)
     }
 
     fn option_by_short(&self, c: char) -> Option<&OptionHandler<'a>> {
-        self.options.iter().find(|h| h.short == Some(c))
+        self.options.iter().find(|h| h.switch == c)
     }
 
     fn option_by_long(&self, l: &str) -> Option<&OptionHandler<'a>> {
-        self.options.iter().find(|h| h.long == Some(l))
+        self.options.iter().find(|h| h.switch == l)
     }
 }
 
@@ -181,18 +215,6 @@ pub fn parse_args<'a>(
     Ok(())
 }
 
-mod assign {
-    use crate::Result;
-
-    pub trait FlagAssign {
-        fn assign(&self) -> Result<()>;
-    }
-
-    pub trait StringAssign {
-        fn assign(&self, value: String) -> Result<()>;
-    }
-}
-
 pub struct FlagAssign<F> {
     inner: RefCell<F>,
 }
@@ -261,14 +283,12 @@ mod tests {
             &ArgHandlers {
                 flags: &[FlagHandler {
                     name: "verbose",
-                    short: Some('v'),
-                    long: None,
+                    switch: Switch::Short('v'),
                     assign: &FlagAssign::new(|| verbose += 1),
                 }],
                 options: &[OptionHandler {
                     name: "num",
-                    short: None,
-                    long: Some("num"),
+                    switch: Switch::Long("num"),
                     assign: &ParsedAssign::new("num", &mut |x| option = Some(x)),
                 }],
                 positions: &[PositionalHandler {

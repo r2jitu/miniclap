@@ -263,23 +263,24 @@ impl Arg {
         quote! { #name: #retrieve }
     }
 
+    fn switch(&self) -> Option<TokenStream> {
+        match (&self.short, &self.long) {
+            (Some(c), Some(l)) => Some(quote! { Switch::Both(#c, #l) }),
+            (Some(c), None) => Some(quote! { Switch::Short(#c) }),
+            (None, Some(l)) => Some(quote! { Switch::Long(#l) }),
+            (None, None) => None,
+        }
+    }
+
     fn handler(&self) -> TokenStream {
         let name_string = self.name.to_string();
-        let short = match self.short {
-            Some(c) => quote! { Some(#c) },
-            None => quote! { None },
-        };
-        let long = match self.long {
-            Some(ref l) => quote! { Some(#l) },
-            None => quote! { None },
-        };
+        let switch = self.switch();
         let arg_var = self.arg_var();
         if self.is_flag {
             quote! {
                 FlagHandler {
                     name: #name_string,
-                    short: #short,
-                    long: #long,
+                    switch: #switch,
                     assign: &FlagAssign::new(|| #arg_var = true),
                 }
             }
@@ -294,8 +295,7 @@ impl Arg {
                 quote! {
                     OptionHandler {
                         name: #name_string,
-                        short: #short,
-                        long: #long,
+                        switch: #switch,
                         assign: &ParsedAssign::new(#name_string, #assign),
                     }
                 }
@@ -360,7 +360,7 @@ impl Generator {
                     mut args: &mut dyn ::std::iter::Iterator<Item = ::std::ffi::OsString>,
                 ) -> ::std::result::Result<Self, ::miniclap::Error> {
                     use ::miniclap::{FlagHandler, OptionHandler, PositionalHandler};
-                    use ::miniclap::{Error, FlagAssign, ParsedAssign};
+                    use ::miniclap::{Error, Switch, FlagAssign, ParsedAssign};
                     use ::std::vec::Vec;
                     use ::std::option::Option::{Some, None};
 
