@@ -285,13 +285,10 @@ impl Arg {
             }
         } else {
             let value = quote! { value };
-            let parse = quote! {
-                #value.parse().map_err(|e| Error::parse_failed(#name_string, Box::new(e)))?
-            };
             let store = match (self.is_multiple, &self.default_value) {
-                (false, Some(_)) => quote! { #arg_var = #parse },
-                (false, None) => quote! { #arg_var = Some(#parse) },
-                (true, _) => quote! { #arg_var.push(#parse) },
+                (false, Some(_)) => quote! { #arg_var = #value },
+                (false, None) => quote! { #arg_var = Some(#value) },
+                (true, _) => quote! { #arg_var.push(#value) },
             };
             if self.index.is_none() {
                 quote! {
@@ -299,7 +296,7 @@ impl Arg {
                         name: #name_string,
                         short: #short,
                         long: #long,
-                        assign: &RefCell::new(|#value: String| Ok(#store)),
+                        assign: &ParsedAssign::new(#name_string, |#value| Ok(#store)),
                     }
                 }
             } else {
@@ -308,7 +305,7 @@ impl Arg {
                     PositionalHandler {
                         name: #name_string,
                         is_multiple: #is_multiple,
-                        assign: &RefCell::new(|#value: String| Ok(#store)),
+                        assign: &ParsedAssign::new(#name_string, |#value| Ok(#store)),
                     }
                 }
             }
@@ -370,6 +367,7 @@ impl Generator {
                     use ::std::cell::RefCell;
                     use ::miniclap::{Error, Result};
                     use ::miniclap::{ArgHandlers, FlagHandler, OptionHandler, PositionalHandler};
+                    use ::miniclap::ParsedAssign;
 
                     #(#decls)*
 

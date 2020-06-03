@@ -1,6 +1,6 @@
 pub use miniclap_derive::MiniClap;
 use std::error::Error as StdError;
-use std::{cell::RefCell, ffi::OsString};
+use std::{cell::RefCell, ffi::OsString, marker::PhantomData, str::FromStr};
 
 pub trait MiniClap: Sized {
     #[inline]
@@ -149,13 +149,13 @@ pub struct OptionHandler<'a> {
     pub name: &'a str,
     pub short: Option<char>,
     pub long: Option<&'a str>,
-    pub assign: &'a RefCell<dyn FnMut(String) -> Result<()> + 'a>,
+    pub assign: &'a dyn Assign,
 }
 
 pub struct PositionalHandler<'a> {
     pub name: &'a str,
     pub is_multiple: bool,
-    pub assign: &'a RefCell<dyn FnMut(String) -> Result<()> + 'a>,
+    pub assign: &'a dyn Assign,
 }
 
 impl<'a> ArgHandlers<'a> {
@@ -215,10 +215,10 @@ pub fn parse_args<'a>(
                 ) {
                     (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
                     (Some(handler), _, None) => (&mut *handler.assign.borrow_mut())()?,
-                    (_, Some(handler), Some(value)) => (&mut *handler.assign.borrow_mut())(value)?,
+                    (_, Some(handler), Some(value)) => handler.assign.assign(value)?,
                     (_, Some(handler), None) => {
                         let value = next_value(handler.name, args)?;
-                        (&mut *handler.assign.borrow_mut())(value)?
+                        handler.assign.assign(value)?
                     }
                     _ => return Err(Error::unknown_switch(&format!("--{}", arg))),
                 }
@@ -247,7 +247,7 @@ pub fn parse_args<'a>(
                             Some('=') => rest[1..].to_string(),
                             _ => rest.to_string(),
                         };
-                        (&mut *handler.assign.borrow_mut())(value)?;
+                        handler.assign.assign(value)?;
                     }
                     _ => return Err(Error::unknown_switch(&format!("-{}", c))),
                 }
@@ -262,7 +262,7 @@ pub fn parse_args<'a>(
                 };
                 if let Some(handler) = handler {
                     let value = arg.to_string();
-                    (&mut *handler.assign.borrow_mut())(value)?;
+                    handler.assign.assign(value)?;
                     num_args += 1;
                 } else {
                     return Err(Error::too_many_positional(arg));
@@ -271,6 +271,41 @@ pub fn parse_args<'a>(
         }
     }
     Ok(())
+}
+
+pub trait Assign {
+    fn assign(&self, value: String) -> Result<()>;
+}
+
+pub struct ParsedAssign<'a, T, F> {
+    name: &'a str,
+    assign: RefCell<F>,
+    _type: PhantomData<T>,
+}
+
+impl<'a, T, F> ParsedAssign<'a, T, F> {
+    pub fn new(name: &'a str, assign: F) -> Self {
+        Self {
+            name,
+            assign: RefCell::new(assign),
+            _type: PhantomData,
+        }
+    }
+}
+
+impl<T, F> Assign for ParsedAssign<'_, T, F>
+where
+    T: FromStr,
+    <T as FromStr>::Err: StdError + 'static,
+    F: FnMut(T) -> Result<()>,
+{
+    #[inline]
+    fn assign(&self, value: String) -> Result<()> {
+        let parsed: T = value
+            .parse()
+            .map_err(|e| Error::parse_failed(self.name, Box::new(e)))?;
+        (&mut *self.assign.borrow_mut())(parsed)
+    }
 }
 
 #[cfg(test)]
@@ -297,17 +332,12 @@ mod tests {
                     name: "num",
                     short: None,
                     long: Some("num"),
-                    assign: &RefCell::new(|x: String| {
-                        Ok(option = Some(
-                            x.parse()
-                                .map_err(|e| Error::parse_failed("num", Box::new(e)))?,
-                        ))
-                    }),
+                    assign: &ParsedAssign::new("num", &mut |x| Ok(option = Some(x))),
                 }],
                 positions: &[PositionalHandler {
                     name: "foo",
                     is_multiple: false,
-                    assign: &RefCell::new(|x: String| Ok(pos = Some(x))),
+                    assign: &ParsedAssign::new("foo", &mut |x| Ok(pos = Some(x))),
                 }],
             },
         );
