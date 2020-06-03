@@ -28,9 +28,9 @@ impl Error {
         std::process::exit(1)
     }
 
-    pub(crate) fn parse_failed(name: &str, err: Box<dyn StdError>) -> Error {
+    pub(crate) fn parse_failed(name: &str, value: &str, err: Box<dyn StdError>) -> Error {
         Error {
-            message: format!("Invalid value for '{}': {}", name, err),
+            message: format!("Argument '{}' cannot parse '{}': {}", name, value, err),
             kind: ErrorKind::ParseFailed,
             source: Some(err),
         }

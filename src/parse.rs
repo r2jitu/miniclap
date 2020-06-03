@@ -5,6 +5,7 @@ struct Parser<'a> {
     args: ArgOsIterator<'a>,
     app: &'a App<'a>,
     num_args: usize,
+    is_trailing: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -13,6 +14,7 @@ impl<'a> Parser<'a> {
             args,
             app,
             num_args: 0,
+            is_trailing: false,
         }
     }
 
@@ -83,15 +85,14 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_positional(&mut self, arg: &str) -> Result<()> {
-        match (
-            self.app.positions.get(self.num_args),
-            self.app.positions.last(),
-        ) {
-            (Some(h), _) | (_, Some(h)) if h.is_multiple => {
+        let h_by_index = self.app.positions.get(self.num_args);
+        let h_last = self.app.positions.last().filter(|h| h.is_multiple);
+        match h_by_index.or(h_last) {
+            Some(h) => {
                 self.num_args += 1;
                 h.assign(arg.to_string())
             }
-            _ => Err(Error::too_many_positional(arg)),
+            None => Err(Error::too_many_positional(arg)),
         }
     }
 
@@ -102,10 +103,10 @@ impl<'a> Parser<'a> {
 
             // Match on the first two characters and remainder
             let mut chars = arg.chars();
-            match (chars.next(), chars.next(), chars.as_str()) {
-                (Some('-'), Some('-'), "") => todo!("Trailing args"),
-                (Some('-'), Some('-'), arg) => self.parse_long(arg)?,
-                (Some('-'), Some(c), rest) => self.parse_short(c, rest)?,
+            match (self.is_trailing, chars.next(), chars.next(), chars.as_str()) {
+                (false, Some('-'), Some('-'), "") => self.is_trailing = true,
+                (false, Some('-'), Some('-'), arg) => self.parse_long(arg)?,
+                (false, Some('-'), Some(c), rest) => self.parse_short(c, rest)?,
                 _ => self.parse_positional(arg)?,
             }
         }

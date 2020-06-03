@@ -204,7 +204,7 @@ where
     fn assign(&self, name: &str, value: String) -> Result<()> {
         let parsed: T = value
             .parse()
-            .map_err(|e| Error::parse_failed(name, Box::new(e)))?;
+            .map_err(|e| Error::parse_failed(name, &value, Box::new(e)))?;
         (&mut *self.assign.borrow_mut())(parsed);
         Ok(())
     }

@@ -10,7 +10,7 @@ struct Opts {
 
     pos: String,
 
-    count: Vec<u8>,
+    count: Vec<i8>,
 }
 
 fn main() {
