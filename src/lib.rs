@@ -49,7 +49,7 @@ pub trait MiniClap: Sized {
 }
 
 #[doc(hidden)]
-pub struct ArgHandlers<'a> {
+pub struct App<'a> {
     pub flags: &'a [FlagHandler<'a>],
     pub options: &'a [OptionHandler<'a>],
     pub positions: &'a [PositionalHandler<'a>],
@@ -76,7 +76,7 @@ pub struct PositionalHandler<'a> {
     pub assign: &'a dyn assign::StringAssign,
 }
 
-impl<'a> ArgHandlers<'a> {
+impl<'a> App<'a> {
     fn flag_by_short(&self, c: char) -> Option<&FlagHandler<'a>> {
         self.flags.iter().find(|h| h.switch == c)
     }

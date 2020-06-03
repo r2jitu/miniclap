@@ -362,9 +362,7 @@ impl Generator {
         let positions = &this.positions;
         quote!(
             impl ::miniclap::MiniClap for #name {
-                fn __parse_internal(
-                    mut args: &mut dyn ::std::iter::Iterator<Item = ::std::ffi::OsString>,
-                ) -> ::std::result::Result<Self, ::miniclap::Error> {
+                fn __parse_internal(args: ::miniclap::ArgOsIterator) -> ::miniclap::Result<Self> {
                     use ::miniclap::{FlagHandler, OptionHandler, PositionalHandler};
                     use ::miniclap::{Error, Switch, FlagAssign, ParsedAssign};
                     use ::std::vec::Vec;
@@ -372,7 +370,7 @@ impl Generator {
 
                     #(#decls)*
 
-                    ::miniclap::parse_args(args, &::miniclap::ArgHandlers {
+                    ::miniclap::parse_args(args, &::miniclap::App {
                         flags: &[ #(#flags),* ],
                         options: &[ #(#options),* ],
                         positions: &[ #(#positions),* ],
