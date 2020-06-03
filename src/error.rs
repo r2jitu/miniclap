@@ -1,3 +1,4 @@
+use crate::Switch;
 use std::error::Error as StdError;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -8,6 +9,7 @@ pub enum ErrorKind {
     UnknownSwitch,
     TooManyPositional,
     MissingRequiredArgument,
+    MissingValue,
     UnexpectedValue,
     InvalidUtf8,
     Other,
@@ -34,9 +36,9 @@ impl Error {
         }
     }
 
-    pub fn unknown_switch(name: &str) -> Error {
+    pub fn unknown_switch(switch: Switch) -> Error {
         Error {
-            message: format!("Did not recognize argument '{}'", name),
+            message: format!("Did not recognize argument '{}'", switch),
             kind: ErrorKind::UnknownSwitch,
             source: None,
         }
@@ -58,9 +60,17 @@ impl Error {
         }
     }
 
-    pub fn unexpected_value(arg_name: &str) -> Error {
+    pub fn missing_value(switch: Switch) -> Error {
         Error {
-            message: format!("Flag '{}' cannot take a value", arg_name),
+            message: format!("Missing value for '{}'", switch),
+            kind: ErrorKind::MissingValue,
+            source: None,
+        }
+    }
+
+    pub fn unexpected_value(switch: Switch) -> Error {
+        Error {
+            message: format!("Flag '{}' cannot take a value", switch),
             kind: ErrorKind::UnexpectedValue,
             source: None,
         }

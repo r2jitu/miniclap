@@ -5,6 +5,11 @@ use std::{cell::RefCell, ffi::OsString, marker::PhantomData, str::FromStr};
 pub mod error;
 pub use error::{Error, Result};
 
+mod parse;
+pub use parse::parse_args;
+
+pub type ArgOsIterator<'a> = &'a mut dyn Iterator<Item = OsString>;
+
 pub trait MiniClap: Sized {
     #[inline]
     fn parse_or_exit() -> Self {
@@ -37,7 +42,7 @@ pub trait MiniClap: Sized {
         Self::__parse_internal(&mut args.into_iter().map(|x| x.into()))
     }
 
-    fn __parse_internal(args: &mut dyn Iterator<Item = OsString>) -> Result<Self>;
+    fn __parse_internal(args: ArgOsIterator) -> Result<Self>;
 }
 
 pub struct ArgHandlers<'a> {
@@ -64,10 +69,21 @@ pub struct PositionalHandler<'a> {
     pub assign: &'a dyn assign::StringAssign,
 }
 
+#[derive(Copy, Clone)]
 pub enum Switch<'a> {
     Short(char),
     Long(&'a str),
     Both(char, &'a str),
+}
+
+impl std::fmt::Display for Switch<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Switch::Short(c) => write!(f, "-{}", c),
+            Switch::Long(l) => write!(f, "--{}", l),
+            Switch::Both(c, l) => write!(f, "-{}/--{}", c, l),
+        }
+    }
 }
 
 mod assign {
@@ -116,99 +132,6 @@ impl<'a> ArgHandlers<'a> {
     fn option_by_long(&self, l: &str) -> Option<&OptionHandler<'a>> {
         self.options.iter().find(|h| h.switch == l)
     }
-}
-
-fn next_value(name: &str, args: &mut dyn Iterator<Item = ::std::ffi::OsString>) -> Result<String> {
-    match args.next().map(OsString::into_string) {
-        Some(Ok(value)) => Ok(value),
-        Some(Err(_)) => Err(Error::invalid_utf8()),
-        None => Err(Error::missing_required_argument(name)),
-    }
-}
-
-pub fn parse_args<'a>(
-    args: &mut dyn Iterator<Item = OsString>,
-    handlers: &ArgHandlers<'a>,
-) -> Result<()> {
-    let mut num_args = 0;
-    let _bin_name = args.next();
-    while let Some(arg_os) = args.next() {
-        let arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
-
-        // Match on the first two characters and remainder
-        let mut chars = arg.chars();
-        match (chars.next(), chars.next(), chars.as_str()) {
-            (Some('-'), Some('-'), "") => todo!("Trailing args"),
-
-            // Long argument
-            (Some('-'), Some('-'), arg) => {
-                // Split at '=' if it exists.
-                let (arg, opt_value) = match arg.find('=') {
-                    Some(i) => {
-                        let (x, y) = arg.split_at(i);
-                        (x, Some(y[1..].into()))
-                    }
-                    None => (arg, None),
-                };
-                match (
-                    handlers.flag_by_long(arg),
-                    handlers.option_by_long(arg),
-                    opt_value,
-                ) {
-                    (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
-                    (Some(handler), _, None) => handler.assign()?,
-                    (_, Some(handler), Some(value)) => handler.assign(value)?,
-                    (_, Some(handler), None) => handler.assign(next_value(handler.name, args)?)?,
-                    _ => return Err(Error::unknown_switch(&format!("--{}", arg))),
-                }
-            }
-
-            // Short argument
-            (Some('-'), Some(c), rest) => {
-                match (handlers.flag_by_short(c), handlers.option_by_short(c)) {
-                    // One or more flags
-                    (Some(handler), _) => {
-                        if rest.contains('=') {
-                            return Err(Error::unexpected_value(&format!("-{}", c)));
-                        }
-                        handler.assign()?;
-                        for c in rest.chars() {
-                            match handlers.flag_by_short(c) {
-                                Some(handler) => handler.assign()?,
-                                None => return Err(Error::unknown_switch(&format!("-{}", c))),
-                            }
-                        }
-                    }
-                    // One option
-                    (_, Some(handler)) => {
-                        let value = match rest.chars().next() {
-                            None => next_value(handler.name, args)?,
-                            Some('=') => rest[1..].to_string(),
-                            _ => rest.to_string(),
-                        };
-                        handler.assign(value)?;
-                    }
-                    _ => return Err(Error::unknown_switch(&format!("-{}", c))),
-                }
-            }
-
-            // Positional argument
-            _ => {
-                let handler = match (handlers.positions.get(num_args), handlers.positions.last()) {
-                    (Some(handler), _) => Some(handler),
-                    (_, Some(handler)) if handler.is_multiple => Some(handler),
-                    _ => None,
-                };
-                if let Some(handler) = handler {
-                    handler.assign(arg.to_string())?;
-                    num_args += 1;
-                } else {
-                    return Err(Error::too_many_positional(arg));
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 impl FlagHandler<'_> {
@@ -276,43 +199,5 @@ where
             .map_err(|e| Error::parse_failed(name, Box::new(e)))?;
         (&mut *self.assign.borrow_mut())(parsed);
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn simple() {
-        let mut verbose = 0;
-        let mut option = None;
-        let mut pos = None;
-        let res = parse_args(
-            &mut ["foo", "--num=10", "-vvv", "hello"]
-                .iter()
-                .map(OsString::from),
-            &ArgHandlers {
-                flags: &[FlagHandler {
-                    name: "verbose",
-                    switch: Switch::Short('v'),
-                    assign: &FlagAssign::new(|| verbose += 1),
-                }],
-                options: &[OptionHandler {
-                    name: "num",
-                    switch: Switch::Long("num"),
-                    assign: &ParsedAssign::new(&mut |x| option = Some(x)),
-                }],
-                positions: &[PositionalHandler {
-                    name: "foo",
-                    is_multiple: false,
-                    assign: &ParsedAssign::new(&mut |x| pos = Some(x)),
-                }],
-            },
-        );
-        assert!(res.is_ok());
-        assert_eq!(verbose, 3);
-        assert_eq!(option, Some(10));
-        assert_eq!(pos, Some("hello".to_string()));
     }
 }
