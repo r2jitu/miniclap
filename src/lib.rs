@@ -69,6 +69,24 @@ pub struct PositionalHandler<'a> {
     pub assign: &'a dyn assign::StringAssign,
 }
 
+impl<'a> ArgHandlers<'a> {
+    fn flag_by_short(&self, c: char) -> Option<&FlagHandler<'a>> {
+        self.flags.iter().find(|h| h.switch == c)
+    }
+
+    fn flag_by_long(&self, l: &str) -> Option<&FlagHandler<'a>> {
+        self.flags.iter().find(|h| h.switch == l)
+    }
+
+    fn option_by_short(&self, c: char) -> Option<&OptionHandler<'a>> {
+        self.options.iter().find(|h| h.switch == c)
+    }
+
+    fn option_by_long(&self, l: &str) -> Option<&OptionHandler<'a>> {
+        self.options.iter().find(|h| h.switch == l)
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum Switch<'a> {
     Short(char),
@@ -83,18 +101,6 @@ impl std::fmt::Display for Switch<'_> {
             Switch::Long(l) => write!(f, "--{}", l),
             Switch::Both(c, l) => write!(f, "-{}/--{}", c, l),
         }
-    }
-}
-
-mod assign {
-    use crate::Result;
-
-    pub trait FlagAssign {
-        fn assign(&self) -> Result<()>;
-    }
-
-    pub trait StringAssign {
-        fn assign(&self, name: &str, value: String) -> Result<()>;
     }
 }
 
@@ -116,21 +122,15 @@ impl PartialEq<&'_ str> for Switch<'_> {
     }
 }
 
-impl<'a> ArgHandlers<'a> {
-    fn flag_by_short(&self, c: char) -> Option<&FlagHandler<'a>> {
-        self.flags.iter().find(|h| h.switch == c)
+mod assign {
+    use crate::Result;
+
+    pub trait FlagAssign {
+        fn assign(&self) -> Result<()>;
     }
 
-    fn flag_by_long(&self, l: &str) -> Option<&FlagHandler<'a>> {
-        self.flags.iter().find(|h| h.switch == l)
-    }
-
-    fn option_by_short(&self, c: char) -> Option<&OptionHandler<'a>> {
-        self.options.iter().find(|h| h.switch == c)
-    }
-
-    fn option_by_long(&self, l: &str) -> Option<&OptionHandler<'a>> {
-        self.options.iter().find(|h| h.switch == l)
+    pub trait StringAssign {
+        fn assign(&self, name: &str, value: String) -> Result<()>;
     }
 }
 
