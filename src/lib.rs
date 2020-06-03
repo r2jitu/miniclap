@@ -2,12 +2,14 @@ pub use miniclap_derive::MiniClap;
 use std::error::Error as StdError;
 use std::{cell::RefCell, ffi::OsString, marker::PhantomData, str::FromStr};
 
-pub mod error;
-pub use error::{Error, Result};
+mod error;
+pub use error::{Error, ErrorKind, Result};
 
 mod parse;
+#[doc(hidden)]
 pub use parse::parse_args;
 
+#[doc(hidden)]
 pub type ArgOsIterator<'a> = &'a mut dyn Iterator<Item = OsString>;
 
 pub trait MiniClap: Sized {
@@ -42,27 +44,32 @@ pub trait MiniClap: Sized {
         Self::__parse_internal(&mut args.into_iter().map(|x| x.into()))
     }
 
+    #[doc(hidden)]
     fn __parse_internal(args: ArgOsIterator) -> Result<Self>;
 }
 
+#[doc(hidden)]
 pub struct ArgHandlers<'a> {
     pub flags: &'a [FlagHandler<'a>],
     pub options: &'a [OptionHandler<'a>],
     pub positions: &'a [PositionalHandler<'a>],
 }
 
+#[doc(hidden)]
 pub struct FlagHandler<'a> {
     pub name: &'a str,
     pub switch: Switch<'a>,
     pub assign: &'a dyn assign::FlagAssign,
 }
 
+#[doc(hidden)]
 pub struct OptionHandler<'a> {
     pub name: &'a str,
     pub switch: Switch<'a>,
     pub assign: &'a dyn assign::StringAssign,
 }
 
+#[doc(hidden)]
 pub struct PositionalHandler<'a> {
     pub name: &'a str,
     pub is_multiple: bool,
@@ -87,6 +94,7 @@ impl<'a> ArgHandlers<'a> {
     }
 }
 
+#[doc(hidden)]
 #[derive(Copy, Clone)]
 pub enum Switch<'a> {
     Short(char),
@@ -123,14 +131,12 @@ impl PartialEq<&'_ str> for Switch<'_> {
 }
 
 mod assign {
-    use crate::Result;
-
     pub trait FlagAssign {
-        fn assign(&self) -> Result<()>;
+        fn assign(&self) -> crate::Result<()>;
     }
 
     pub trait StringAssign {
-        fn assign(&self, name: &str, value: String) -> Result<()>;
+        fn assign(&self, name: &str, value: String) -> crate::Result<()>;
     }
 }
 
@@ -152,6 +158,7 @@ impl PositionalHandler<'_> {
     }
 }
 
+#[doc(hidden)]
 pub struct FlagAssign<F> {
     inner: RefCell<F>,
 }
@@ -172,6 +179,7 @@ impl<F: FnMut()> assign::FlagAssign for FlagAssign<F> {
     }
 }
 
+#[doc(hidden)]
 pub struct ParsedAssign<T, F> {
     assign: RefCell<F>,
     _type: PhantomData<T>,

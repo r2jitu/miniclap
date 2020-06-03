@@ -28,7 +28,7 @@ impl Error {
         std::process::exit(1)
     }
 
-    pub fn parse_failed(name: &str, err: Box<dyn StdError>) -> Error {
+    pub(crate) fn parse_failed(name: &str, err: Box<dyn StdError>) -> Error {
         Error {
             message: format!("Invalid value for '{}': {}", name, err),
             kind: ErrorKind::ParseFailed,
@@ -36,7 +36,7 @@ impl Error {
         }
     }
 
-    pub fn unknown_switch(switch: Switch) -> Error {
+    pub(crate) fn unknown_switch(switch: Switch) -> Error {
         Error {
             message: format!("Did not recognize argument '{}'", switch),
             kind: ErrorKind::UnknownSwitch,
@@ -44,7 +44,7 @@ impl Error {
         }
     }
 
-    pub fn too_many_positional(arg: &str) -> Error {
+    pub(crate) fn too_many_positional(arg: &str) -> Error {
         Error {
             message: format!("Too many positional arguments, starting with '{}'", arg),
             kind: ErrorKind::TooManyPositional,
@@ -52,6 +52,7 @@ impl Error {
         }
     }
 
+    #[doc(hidden)]
     pub fn missing_required_argument(arg_name: &str) -> Error {
         Error {
             message: format!("Missing required argument '{}'", arg_name),
@@ -60,7 +61,7 @@ impl Error {
         }
     }
 
-    pub fn missing_value(switch: Switch) -> Error {
+    pub(crate) fn missing_value(switch: Switch) -> Error {
         Error {
             message: format!("Missing value for '{}'", switch),
             kind: ErrorKind::MissingValue,
@@ -68,7 +69,7 @@ impl Error {
         }
     }
 
-    pub fn unexpected_value(switch: Switch) -> Error {
+    pub(crate) fn unexpected_value(switch: Switch) -> Error {
         Error {
             message: format!("Flag '{}' cannot take a value", switch),
             kind: ErrorKind::UnexpectedValue,
@@ -76,7 +77,7 @@ impl Error {
         }
     }
 
-    pub fn invalid_utf8() -> Error {
+    pub(crate) fn invalid_utf8() -> Error {
         Error {
             message: "Invalid UTF-8 was detected in one or more arguments".into(),
             kind: ErrorKind::InvalidUtf8,
@@ -84,6 +85,7 @@ impl Error {
         }
     }
 
+    #[doc(hidden)]
     pub fn other<I: Into<String>>(message: I) -> Error {
         Error {
             message: message.into(),
