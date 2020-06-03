@@ -78,7 +78,7 @@ mod assign {
     }
 
     pub trait StringAssign {
-        fn assign(&self, value: String) -> Result<()>;
+        fn assign(&self, name: &str, value: String) -> Result<()>;
     }
 }
 
@@ -156,12 +156,9 @@ pub fn parse_args<'a>(
                     opt_value,
                 ) {
                     (Some(_), _, Some(_)) => return Err(Error::unexpected_value(arg)),
-                    (Some(handler), _, None) => handler.assign.assign()?,
-                    (_, Some(handler), Some(value)) => handler.assign.assign(value)?,
-                    (_, Some(handler), None) => {
-                        let value = next_value(handler.name, args)?;
-                        handler.assign.assign(value)?
-                    }
+                    (Some(handler), _, None) => handler.assign()?,
+                    (_, Some(handler), Some(value)) => handler.assign(value)?,
+                    (_, Some(handler), None) => handler.assign(next_value(handler.name, args)?)?,
                     _ => return Err(Error::unknown_switch(&format!("--{}", arg))),
                 }
             }
@@ -174,10 +171,10 @@ pub fn parse_args<'a>(
                         if rest.contains('=') {
                             return Err(Error::unexpected_value(&format!("-{}", c)));
                         }
-                        handler.assign.assign()?;
+                        handler.assign()?;
                         for c in rest.chars() {
                             match handlers.flag_by_short(c) {
-                                Some(handler) => handler.assign.assign()?,
+                                Some(handler) => handler.assign()?,
                                 None => return Err(Error::unknown_switch(&format!("-{}", c))),
                             }
                         }
@@ -189,7 +186,7 @@ pub fn parse_args<'a>(
                             Some('=') => rest[1..].to_string(),
                             _ => rest.to_string(),
                         };
-                        handler.assign.assign(value)?;
+                        handler.assign(value)?;
                     }
                     _ => return Err(Error::unknown_switch(&format!("-{}", c))),
                 }
@@ -203,8 +200,7 @@ pub fn parse_args<'a>(
                     _ => None,
                 };
                 if let Some(handler) = handler {
-                    let value = arg.to_string();
-                    handler.assign.assign(value)?;
+                    handler.assign(arg.to_string())?;
                     num_args += 1;
                 } else {
                     return Err(Error::too_many_positional(arg));
@@ -213,6 +209,24 @@ pub fn parse_args<'a>(
         }
     }
     Ok(())
+}
+
+impl FlagHandler<'_> {
+    fn assign(&self) -> Result<()> {
+        self.assign.assign()
+    }
+}
+
+impl OptionHandler<'_> {
+    fn assign(&self, value: String) -> Result<()> {
+        self.assign.assign(self.name, value)
+    }
+}
+
+impl PositionalHandler<'_> {
+    fn assign(&self, value: String) -> Result<()> {
+        self.assign.assign(self.name, value)
+    }
 }
 
 pub struct FlagAssign<F> {
@@ -235,33 +249,31 @@ impl<F: FnMut()> assign::FlagAssign for FlagAssign<F> {
     }
 }
 
-pub struct ParsedAssign<'a, T, F> {
-    name: &'a str,
+pub struct ParsedAssign<T, F> {
     assign: RefCell<F>,
     _type: PhantomData<T>,
 }
 
-impl<'a, T, F> ParsedAssign<'a, T, F> {
-    pub fn new(name: &'a str, assign: F) -> Self {
+impl<'a, T, F> ParsedAssign<T, F> {
+    pub fn new(assign: F) -> Self {
         Self {
-            name,
             assign: RefCell::new(assign),
             _type: PhantomData,
         }
     }
 }
 
-impl<T, F> assign::StringAssign for ParsedAssign<'_, T, F>
+impl<T, F> assign::StringAssign for ParsedAssign<T, F>
 where
     T: FromStr,
     <T as FromStr>::Err: StdError + 'static,
     F: FnMut(T),
 {
     #[inline]
-    fn assign(&self, value: String) -> Result<()> {
+    fn assign(&self, name: &str, value: String) -> Result<()> {
         let parsed: T = value
             .parse()
-            .map_err(|e| Error::parse_failed(self.name, Box::new(e)))?;
+            .map_err(|e| Error::parse_failed(name, Box::new(e)))?;
         (&mut *self.assign.borrow_mut())(parsed);
         Ok(())
     }
@@ -289,12 +301,12 @@ mod tests {
                 options: &[OptionHandler {
                     name: "num",
                     switch: Switch::Long("num"),
-                    assign: &ParsedAssign::new("num", &mut |x| option = Some(x)),
+                    assign: &ParsedAssign::new(&mut |x| option = Some(x)),
                 }],
                 positions: &[PositionalHandler {
                     name: "foo",
                     is_multiple: false,
-                    assign: &ParsedAssign::new("foo", &mut |x| pos = Some(x)),
+                    assign: &ParsedAssign::new(&mut |x| pos = Some(x)),
                 }],
             },
         );

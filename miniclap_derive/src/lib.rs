@@ -77,17 +77,6 @@ impl Attr {
     }
 }
 
-struct Arg {
-    name: Ident,
-    index: Option<usize>,
-    short: Option<char>,
-    long: Option<String>,
-    default_value: Option<Lit>,
-    is_flag: bool,
-    is_required: bool,
-    is_multiple: bool,
-}
-
 struct App {
     by_position: Vec<Arg>,
     by_switch: Vec<Arg>,
@@ -220,6 +209,17 @@ impl App {
     }
 }
 
+struct Arg {
+    name: Ident,
+    index: Option<usize>,
+    short: Option<char>,
+    long: Option<String>,
+    default_value: Option<Lit>,
+    is_flag: bool,
+    is_required: bool,
+    is_multiple: bool,
+}
+
 impl Arg {
     fn arg_var(&self) -> Ident {
         format_ident!("arg_{}", &self.name)
@@ -272,41 +272,47 @@ impl Arg {
         }
     }
 
+    fn assign(&self) -> TokenStream {
+        let arg_var = self.arg_var();
+        if self.is_flag {
+            quote! { &FlagAssign::new(|| #arg_var = true) }
+        } else {
+            let store = match (self.is_multiple, &self.default_value) {
+                (false, Some(_)) => quote! { |value| #arg_var = value },
+                (false, None) => quote! { |value| #arg_var = Some(value) },
+                (true, _) => quote! { |value| #arg_var.push(value) },
+            };
+            quote! { &ParsedAssign::new(#store) }
+        }
+    }
+
     fn handler(&self) -> TokenStream {
         let name_string = self.name.to_string();
         let switch = self.switch();
-        let arg_var = self.arg_var();
+        let assign = self.assign();
         if self.is_flag {
             quote! {
                 FlagHandler {
                     name: #name_string,
                     switch: #switch,
-                    assign: &FlagAssign::new(|| #arg_var = true),
+                    assign: #assign,
+                }
+            }
+        } else if self.index.is_none() {
+            quote! {
+                OptionHandler {
+                    name: #name_string,
+                    switch: #switch,
+                    assign: #assign,
                 }
             }
         } else {
-            let value = quote! { value };
-            let assign = match (self.is_multiple, &self.default_value) {
-                (false, Some(_)) => quote! { |#value| #arg_var = #value },
-                (false, None) => quote! { |#value| #arg_var = Some(#value) },
-                (true, _) => quote! { |#value| #arg_var.push(#value) },
-            };
-            if self.index.is_none() {
-                quote! {
-                    OptionHandler {
-                        name: #name_string,
-                        switch: #switch,
-                        assign: &ParsedAssign::new(#name_string, #assign),
-                    }
-                }
-            } else {
-                let is_multiple = self.is_multiple;
-                quote! {
-                    PositionalHandler {
-                        name: #name_string,
-                        is_multiple: #is_multiple,
-                        assign: &ParsedAssign::new(#name_string, #assign),
-                    }
+            let is_multiple = self.is_multiple;
+            quote! {
+                PositionalHandler {
+                    name: #name_string,
+                    is_multiple: #is_multiple,
+                    assign: #assign,
                 }
             }
         }
