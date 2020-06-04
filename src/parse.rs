@@ -97,7 +97,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse(mut self) -> Result<()> {
-        let _bin_name = self.args.next();
         while let Some(arg_os) = self.args.next() {
             let arg: &str = &arg_os.to_str().ok_or_else(Error::invalid_utf8)?;
 
@@ -114,13 +113,13 @@ impl<'a> Parser<'a> {
     }
 }
 
-pub fn parse_args(args: ArgOsIterator, app: &App) -> Result<()> {
+pub fn parse_args(_command: &str, args: ArgOsIterator, app: &App) -> Result<()> {
     Parser::new(args, app).parse()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::*;
 
     #[test]
     fn simple() {
@@ -128,9 +127,8 @@ mod tests {
         let mut option = None;
         let mut pos = None;
         let res = parse_args(
-            &mut ["foo", "--num=10", "-vvv", "hello"]
-                .iter()
-                .map(OsString::from),
+            "foo",
+            &mut ["--num=10", "-vvv", "hello"].iter().map(OsString::from),
             &App {
                 flags: &[FlagHandler {
                     name: "verbose",

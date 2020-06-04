@@ -41,11 +41,14 @@ pub trait MiniClap: Sized {
         I: IntoIterator<Item = T>,
         T: Into<OsString>,
     {
-        Self::__parse_internal(&mut args.into_iter().map(|x| x.into()))
+        let iter: ArgOsIterator = &mut args.into_iter().map(|x| x.into());
+        let command_os: OsString = iter.next().expect("Missing command");
+        let command = command_os.into_string().map_err(|_| Error::invalid_utf8())?;
+        Self::__parse_internal(&command, iter)
     }
 
     #[doc(hidden)]
-    fn __parse_internal(args: ArgOsIterator) -> Result<Self>;
+    fn __parse_internal(command: &str, args: ArgOsIterator) -> Result<Self>;
 }
 
 #[doc(hidden)]
